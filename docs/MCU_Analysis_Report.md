@@ -17,13 +17,23 @@ Upon timer expiration, the auxiliary MCU boots the primary system rail, transfer
 ---
 
 ## 2. Technical Challenge: The LoRaWAN Context Footprint
-When a LoRaWAN endpoint loses power, it loses its network authorization status unless it triggers a new, power-intensive Over-The-Air Activation (OTAA) join sequence on every boot. To bypass this overhead, a standard LoRaWAN 1.0.x / 1.1 endpoint session must be preserved statically. 
+When a LoRaWAN endpoint loses power, it loses its network authorization status unless it triggers a new, power-intensive Over-The-Air Activation (OTAA) join sequence on every boot. To bypass this overhead, a standard LoRaWAN endpoint session must be preserved statically. The bare minimum footprint depends on the protocol version, since LoRaWAN 1.1 splits the single network session key used in 1.0.x into three separate keys and adds a second downlink counter.
 
-The bare minimum variables required to safely bypass a network re-join sequence map to exactly **40 bytes**:
+**LoRaWAN 1.0.x** — the bare minimum variables required to safely bypass a network re-join sequence map to exactly **40 bytes**:
 *   **DevAddr** (Device Address): 4 Bytes
 *   **NwkSKey** (Network Session Key): 16 Bytes
 *   **AppSKey** (Application Session Key): 16 Bytes
 *   **FCntUp** (Uplink Frame Counter): 4 Bytes
+
+**LoRaWAN 1.1** — replaces the single `NwkSKey` with three independent 128-bit session keys and tracks frame counters separately per direction, raising the bare minimum to **80 bytes**:
+*   **DevAddr** (Device Address): 4 Bytes
+*   **FNwkSIntKey** (Forwarding Network Session Integrity Key): 16 Bytes
+*   **SNwkSIntKey** (Serving Network Session Integrity Key): 16 Bytes
+*   **NwkSEncKey** (Network Session Encryption Key): 16 Bytes
+*   **AppSKey** (Application Session Key): 16 Bytes
+*   **FCntUp** (Uplink Frame Counter): 4 Bytes
+*   **NFCntDown** (Network Downlink Frame Counter): 4 Bytes
+*   **AFCntDown** (Application Downlink Frame Counter): 4 Bytes
 
 ### Production Overhead Consideration
 While the foundational mathematical keys occupy 40 bytes, fully functional open-source stacks (such as *LoRaMAC-node* or *MCCI LMIC*) track secondary operational parameters. These include adaptive data rates (ADR), link-check frame tokens, and channel frequency masks. To maintain a transparent, drop-in state recovery without forcing the main MCU to run lengthy recalculations, the retention target expands to a range of **256 Bytes to 512 Bytes**.
@@ -35,8 +45,7 @@ To select the ultimate hardware companion for this specific role, multiple gener
 
 | Microcontroller Part Number | Key Architectural Core | Memory Retention Mechanism | Sleep Power (RTC Active) | Architecture Trade-offs & Limitations |
 | :--- | :--- | :--- | :--- | :--- |
-| **NXP LPC810** | Arm Cortex-M0+ | Power-down Mode (SRAM Alive) | ~2.0 µA – 3.5 µA | **Severe Pin Constraints:** 8-pin DIP/SOP package leaves only 6 I/Os. Running an external crystal leaves zero pins for I2C and hardware debug lines. Legacy technology with higher static current leakage. |
-| **NXP LPC81xM Series** | Arm Cortex-M0+ | Power-down Mode (SRAM Alive) | ~1.5 µA – 3.0 µA | Base architecture contains a flexible Switch Matrix. However, the internal low-power oscillators exhibit high thermal drift, making down-link window synchronization for LoRaWAN highly volatile. |
+| **NXP LPC81xM Series (LPC810/811/812)** | Arm Cortex-M0+ | Power-down Mode (SRAM Alive) | ~1.5 µA – 3.5 µA | Shared architecture across the family includes a flexible Switch Matrix, but the internal low-power oscillators exhibit high thermal drift, making down-link window synchronization for LoRaWAN highly volatile. **Severe Pin Constraints on LPC810:** the 8-pin DIP/SOP variant leaves only 6 I/Os, and running an external crystal leaves zero pins free for I2C and hardware debug lines. |
 | **STMicroelectronics STM32C011J6M6** | Arm Cortex-M0+ | Standby Mode (Backup Registers) | ~7.45 µA | **Budget Optimized Core:** Built to compete with cheap 8-bit MCUs. It lacks advanced low-power process nodes. Dropping into deep "Shutdown Mode" reduces draw to 20 nA but wipes all backup registers completely. |
 | **STMicroelectronics STM32L4 Series** | Arm Cortex-M4 with FPU | Stop 2 Mode (SRAM Retained) | ~1.1 µA – 1.4 µA | High performance core featuring cache optimization. Perfect for micro-second wake times, but the larger gate count of the M4 core translates to an unnecessary active power baseline during simple I2C transfers. |
 | **STMicroelectronics STM32U031F8P6** | Arm Cortex-M0+ | Stop 2 Mode (Full SRAM Retained) | **~630 nA (0.63 µA)** | **Optimal Selection:** Purpose-built for companion power-management tasks. Preserves all 12 KB of internal SRAM without relying on limited backup registers or wearing out flash memory sectors. |
