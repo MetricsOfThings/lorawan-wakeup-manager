@@ -17,11 +17,17 @@ Processor is represented by a simple I2C-master test harness that exercises
 the register protocol below — no real LoRaWAN stack is required for this
 phase.
 
-Two MCU targets are in scope over time:
-- **LPC810** (available now) — first hardware bring-up target.
-- **STM32U031F8P6** (arriving later) — the production part selected in the
-  analysis report. Its backend is stubbed in this phase, implemented once
-  hardware is available.
+Two MCU backends are implemented from the start of this phase, not staged:
+- **LPC810** (hardware available now) — built and validated on real
+  hardware in this phase.
+- **STM32U031F8P6** (hardware arriving later) — the production part
+  selected in the analysis report. Its backend is fully implemented and
+  must build/link cleanly against real ST silicon headers in this phase;
+  hardware validation (flashing, measuring current, confirming Stop 2
+  wake behavior) happens once a board is available. Building both
+  backends from day one means the second port's compile-time errors
+  surface immediately instead of being deferred to whenever the board
+  arrives.
 
 The firmware core must be identical source code across both targets. Only
 the platform backend differs.
@@ -38,14 +44,23 @@ core/            Platform-agnostic. No vendor SDK, no MCU headers.
 platform.h       The HAL contract: function prototypes every backend
                  must implement.
 platform/lpc810/     Backend: bare CMSIS + NXP LPC81x register headers.
-platform/stm32u031/  Backend: stubbed now; implemented later against
-                     ST's HAL/LL, behind the same contract.
+platform/stm32u031/  Backend: STM32Cube HAL/LL, against a vendored
+                     vendor/STM32CubeU0 submodule.
 platform/host_mock/  Backend: fakes for unit tests, no hardware.
 ```
 
-`core/` never includes a vendor header. Porting to the STM32U031F8P6 means
-writing `platform/stm32u031/*.c` against `platform.h` — `core/` does not
-change.
+`core/` never includes a vendor header, and never includes anything from
+`vendor/`. Adding a new STM32 family later (e.g. STM32L4, STM32G0) means:
+add a `vendor/STM32Cube<Family>` submodule pinned to a specific ST tag,
+add a `platform/<family>/` directory implementing `platform.h` against
+that family's HAL, and add its CMake target — `core/` and the other
+backends do not change. ST's HAL function *names* are broadly consistent
+across series, but low-power entry points and peripheral quirks differ
+enough between families that each gets its own independent backend rather
+than a shared "STM32 HAL" abstraction layer. No shared
+`platform/stm32_common/` helper module exists yet; one should only be
+extracted once a second STM32 family backend is actually built and
+duplication is visible, not speculatively now.
 
 ## 3. HAL contract (`platform.h`)
 
@@ -90,8 +105,10 @@ main MCU's LoRaWAN stack or protocol version changes.
   quarter to half of the entire chip's RAM by itself. 64 bytes is enough
   to exercise the protocol end-to-end without starving the rest of the
   firmware; it is not meant to hold a full production LoRaWAN 1.1 context.
-- **STM32U031F8P6:** larger default set when that backend is implemented;
-  its 12 KB SRAM has no comparable constraint.
+- **STM32U031F8P6 default: 128 bytes.** Covers the LoRaWAN 1.1 minimum
+  (80 bytes) plus headroom for ADR/channel-mask state, with plenty of
+  margin against its 12 KB SRAM — no comparable size pressure to the
+  LPC810.
 - `CONTEXT_LENGTH` (register 0x02, see below) tracks how many of those
   bytes are actually meaningful, since the real LoRaWAN context size
   differs between protocol versions (see the MCU Analysis Report's
@@ -191,10 +208,17 @@ join and start reporting without an arbitrary extra delay.
   the register-map logic in `vault_i2c_registers.c` gets exercised without
   needing an I2C bus at all.
 - **`lpc810` target:** `arm-none-eabi-gcc`, Cortex-M0+, LPC810-specific
-  linker script (4 KB flash / 1 KB SRAM).
-- **`stm32u031` target:** placeholder only in this phase — CMake target
-  exists and fails clearly if built, real backend added when hardware
-  arrives.
+  linker script (4 KB flash / 1 KB SRAM). Built, flashed, and validated on
+  real hardware in this phase.
+- **`stm32u031` target:** `arm-none-eabi-gcc`, Cortex-M0+, STM32U031F8-specific
+  linker script (64 KB flash / 12 KB SRAM), built against the
+  `vendor/STM32CubeU0` submodule (pinned to a specific ST release tag).
+  Fully implemented in this phase and must compile and link cleanly as
+  part of the normal build — this is a build-time correctness check only;
+  no hardware exists yet to flash it onto or measure current against.
+- **Vendoring:** `vendor/STM32CubeU0` is a git submodule, added only when
+  the STM32U031 backend needs it. A future STM32 family gets its own
+  `vendor/STM32Cube<Family>` submodule the same way — see section 2.
 - **Test runner:** a minimal custom assert-based harness, not an external
   framework like Unity/CMock — no dependency management needed at this
   project size.
@@ -202,9 +226,14 @@ join and start reporting without an arbitrary extra delay.
 ## 8. Explicitly out of scope for this POC
 
 - Real LoRaWAN stack integration (main MCU side is a test harness).
-- STM32U031F8P6 backend implementation (stubbed only).
+- STM32U031F8P6 **hardware** validation — flashing, current measurement,
+  confirming Stop 2 wake-resume behavior on real silicon. The backend
+  itself is implemented and build-checked in this phase (see sections 1,
+  2, 7); only bring-up on an actual board is deferred until one arrives.
 - Wake-interval persistence across a full vault power loss.
 - Event-triggered/out-of-band wake (only interval-based scheduling).
 - External crystal on LPC810 (using internal RC oscillator; RTC timing
   accuracy is a known limitation on this bring-up target, not present on
   the STM32U031F8P6).
+- A shared `platform/stm32_common/` abstraction across STM32 families
+  (see section 2) — not until a second STM32 family backend exists.
