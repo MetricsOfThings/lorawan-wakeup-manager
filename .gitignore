@@ -1,1 +1,7 @@
 .superpowers/
+
+build/
+*.o
+*.elf
+*.bin
+*.map
