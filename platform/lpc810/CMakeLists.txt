@@ -12,11 +12,13 @@ target_compile_options(vault_lpc810_cmsis_check PRIVATE -mcpu=cortex-m0plus -mth
 add_executable(vault_lpc810
     src/startup_lpc810.c
     src/main.c
+    src/platform_lpc810_gpio.c
 )
 
 target_include_directories(vault_lpc810 PRIVATE
     vendor
     ${CMAKE_SOURCE_DIR}/vendor/CMSIS_5/CMSIS/Core/Include
+    ${CMAKE_SOURCE_DIR}/core/include
 )
 
 target_compile_options(vault_lpc810 PRIVATE -mcpu=cortex-m0plus -mthumb -Os)
