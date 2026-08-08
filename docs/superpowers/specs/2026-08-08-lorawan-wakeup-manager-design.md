@@ -144,9 +144,24 @@ Cortex-M — no conversion needed).
 | `0x05` | `WAKE_INTERVAL_SEC` | R/W | 4 B (u32 LE) | Seconds until the next wake. Vault arms the RTC/wakeup timer with this value on sleep entry. Readable for confirmation/debugging. |
 
 Rules:
+- Register addresses (`0x00`–`0x05`) are fixed and identical on every
+  backend, regardless of that backend's `VAULT_CONTEXT_SIZE`. The pointer
+  set by the first byte of a transaction selects exactly one field for
+  that whole transaction; auto-increment walks byte offsets *within* that
+  field only (e.g. offset 0, 1, 2... of `CONTEXT_DATA`), never into the
+  next register number. Reaching a different register requires a new
+  transaction with a new pointer byte. This is what keeps `COMMAND` and
+  `WAKE_INTERVAL_SEC` at the same addresses on both the 64-byte LPC810
+  build and the 128-byte STM32U031F8P6 build.
 - Reads/writes past `CONTEXT_LENGTH` or `VAULT_CONTEXT_SIZE` are clamped,
   never treated as an error — a malformed or buggy master must not be able
-  to hang or corrupt the vault.
+  to hang or corrupt the vault. The same applies to any field: bytes
+  beyond a field's fixed width (e.g. past 4 bytes for `WAKE_INTERVAL_SEC`)
+  are ignored, not written elsewhere.
+- Multi-byte fields commit atomically at the last byte of their width
+  (e.g. `WAKE_INTERVAL_SEC` updates only once all 4 bytes have been
+  received), so a transaction aborted partway through never leaves a
+  torn value in place of the previous one.
 - `CMD_DONE` only takes effect **after** the STOP condition, not
   mid-transaction, so it cannot race a write that follows it in the same
   transaction.
