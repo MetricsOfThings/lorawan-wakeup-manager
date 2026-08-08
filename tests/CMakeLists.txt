@@ -1,3 +1,7 @@
 add_executable(test_vault_i2c_registers test_vault_i2c_registers.c)
 target_link_libraries(test_vault_i2c_registers PRIVATE vault_core)
 add_test(NAME vault_i2c_registers COMMAND test_vault_i2c_registers)
+
+add_executable(test_vault_core test_vault_core.c)
+target_link_libraries(test_vault_core PRIVATE vault_core vault_platform_host_mock)
+add_test(NAME vault_core COMMAND test_vault_core)
