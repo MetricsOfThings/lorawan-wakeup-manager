@@ -25,9 +25,13 @@ ctest --output-on-failure
 mkdir -p build/lpc810 && cd build/lpc810
 cmake ../.. -DVAULT_TARGET=lpc810
 cmake --build .
-arm-none-eabi-objcopy -O binary vault_lpc810 vault_lpc810.bin
+arm-none-eabi-objcopy -O binary platform/lpc810/vault_lpc810 vault_lpc810.bin
 # flash vault_lpc810.bin via your ISP/SWD programmer
 ```
+
+The ELF (and its `vault_lpc810.map` link map) land in `platform/lpc810/`
+under the build directory, not directly in it, since `vault_lpc810` is
+built by the nested `platform/lpc810/CMakeLists.txt`.
 
 Before flashing to real hardware, read the verification checklist at the
 top of "Phase B" in
