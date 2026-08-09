@@ -30,8 +30,8 @@ void (* const g_pfnVectors[])(void) = {
        I2C0_IRQn (=8) is filled in here too since its position is already
        known, but Task 9 owns actually implementing/verifying it -- for
        now it points at Default_Handler like the rest of the unused slots.
-       Extend this array further (do not shrink or renumber it) for any
-       IRQn beyond 15 that a later task needs. */
+       Array covers the full IRQ0-31 range per device specification
+       (NUMBER_OF_INT_VECTORS = 48: 16 Cortex-M0+ exceptions + 32 device IRQs). */
     0,                  /* IRQ0:  SPI0_IRQn */
     0,                  /* IRQ1:  SPI1_IRQn */
     0,                  /* IRQ2:  Reserved18_IRQn */
@@ -48,6 +48,22 @@ void (* const g_pfnVectors[])(void) = {
     0,                  /* IRQ13: BOD_IRQn */
     0,                  /* IRQ14: Reserved30_IRQn */
     WKT_IRQHandler,     /* IRQ15: WKT_IRQn */
+    0,                  /* IRQ16: Reserved32_IRQn */
+    0,                  /* IRQ17: Reserved33_IRQn */
+    0,                  /* IRQ18: Reserved34_IRQn */
+    0,                  /* IRQ19: Reserved35_IRQn */
+    0,                  /* IRQ20: Reserved36_IRQn */
+    0,                  /* IRQ21: Reserved37_IRQn */
+    0,                  /* IRQ22: Reserved38_IRQn */
+    0,                  /* IRQ23: Reserved39_IRQn */
+    0,                  /* IRQ24: PIN_INT0_IRQn */
+    0,                  /* IRQ25: PIN_INT1_IRQn */
+    0,                  /* IRQ26: PIN_INT2_IRQn */
+    0,                  /* IRQ27: PIN_INT3_IRQn */
+    0,                  /* IRQ28: PIN_INT4_IRQn */
+    0,                  /* IRQ29: PIN_INT5_IRQn */
+    0,                  /* IRQ30: PIN_INT6_IRQn */
+    0,                  /* IRQ31: PIN_INT7_IRQn */
 };
 
 void Reset_Handler(void) {
