@@ -16,30 +16,47 @@ void platform_init(void) {
 #endif
 }
 
+/* PDSLEEPCFG/PDAWAKECFG, not PDRUNCFG, govern power domains across a
+   WFI-entered Deep-sleep/Power-down cycle on this family: PDSLEEPCFG is
+   applied by hardware for the sleep period itself, and PDAWAKECFG is
+   auto-loaded back into PDRUNCFG on wake -- PDRUNCFG is only the
+   "currently active" register and writing to it takes effect
+   immediately, not deferred to sleep entry. This used to be set up as
+   `SYSCON->PDRUNCFG = 0xFFFFFFFFu` directly in
+   platform_enter_low_power_sleep(), which powered down IRC_PD and
+   FLASH_PD *immediately* -- while the CPU was still actively running
+   from IRC-clocked flash -- freezing the chip solid before it ever
+   reached the `wfi` instruction below, rather than entering a real
+   WFI-based sleep that the WKT interrupt could wake it from. Both
+   registers only need setting once, before the first sleep, since their
+   values persist across cycles.
+
+   BOD and the watchdog oscillator are powered down in both sleep and
+   awake state (this design uses neither); the system oscillator and PLL
+   are powered down too since the design runs entirely from the internal
+   IRC (see platform_lpc810_uart.c's 12 MHz IRC assumption), with no
+   external crystal or higher-than-IRC clock needed. IRC/IRCOUT/FLASH
+   must be powered on wake (bits clear = powered) so the CPU can actually
+   resume fetching and executing instructions. WKT's own low-power
+   oscillator is not represented in either register at all -- by design,
+   it isn't gated by PDSLEEPCFG/PDAWAKECFG the way these other domains
+   are, since keeping it alive through Deep-sleep/Power-down is the
+   entire point of the WKT peripheral. Verify all of this against
+   UM10601's "Deep-sleep configuration register" and "Wake-up
+   configuration register" sections before flashing. */
+static void lpc810_power_configure_sleep_domains(void) {
+    SYSCON->PDSLEEPCFG = SYSCON_PDSLEEPCFG_BOD_PD_MASK |
+                          SYSCON_PDSLEEPCFG_WDTOSC_PD_MASK;
+
+    SYSCON->PDAWAKECFG = SYSCON_PDAWAKECFG_BOD_PD_MASK |
+                          SYSCON_PDAWAKECFG_SYSOSC_PD_MASK |
+                          SYSCON_PDAWAKECFG_WDTOSC_PD_MASK |
+                          SYSCON_PDAWAKECFG_SYSPLL_PD_MASK |
+                          SYSCON_PDAWAKECFG_ACMP_MASK;
+}
+
 void platform_enter_low_power_sleep(void) {
-    /* PDRUNCFG selects which power domains stay alive in the sleep mode
-       entered by WFI when SCR.SLEEPDEEP is set. Power-down mode (as
-       opposed to Deep power-down) retains SRAM and resumes execution
-       after WFI rather than resetting -- verify the exact PDRUNCFG bit
-       pattern for "Power-down, SRAM retained, WKT running" against
-       UM10601 "Power configuration register" before flashing; a wrong
-       bit here can silently fall back to Deep power-down, which DOES
-       reset on wake and would break vault_core's resume-in-place
-       assumption. */
-    SYSCON->PDRUNCFG = 0xFFFFFFFFu; /* placeholder pattern -- MUST be
-                                        replaced with the verified
-                                        Power-down bit pattern before
-                                        this is flashed to hardware.
-                                        (LPC8xx.h defines individual
-                                        SYSCON_PDRUNCFG_*_PD field
-                                        macros -- e.g. IRCOUT_PD,
-                                        IRC_PD, FLASH_PD, BOD_PD,
-                                        SYSOSC_PD, WDTOSC_PD, SYSPLL_PD,
-                                        ACMP -- but no single "power
-                                        everything down for Power-down
-                                        mode" convenience macro; Task 11
-                                        must OR together the correct
-                                        subset per UM10601.) */
+    lpc810_power_configure_sleep_domains();
 
     SCB->SCR |= (1u << 2); /* SLEEPDEEP bit -- verify against ARM CMSIS core header, not UM10601 */
 
