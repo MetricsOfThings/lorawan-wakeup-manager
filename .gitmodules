@@ -1,3 +1,6 @@
 [submodule "vendor/CMSIS_5"]
 	path = vendor/CMSIS_5
 	url = https://github.com/ARM-software/CMSIS_5.git
+[submodule "vendor/STM32CubeU0"]
+	path = vendor/STM32CubeU0
+	url = https://github.com/STMicroelectronics/STM32CubeU0.git
