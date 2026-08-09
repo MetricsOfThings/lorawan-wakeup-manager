@@ -68,6 +68,23 @@ static void test_context_data_roundtrip_and_valid_flag(void) {
     TEST_ASSERT(vault_state_context_valid());
 }
 
+static void test_context_data_write_without_stop_does_not_set_valid(void) {
+    vault_test_reset_all();
+
+    /* Write REG_CONTEXT_DATA bytes but never call on_stop() -- simulates
+       a master that dies mid-write. s_context_valid must stay false
+       (CONTEXT_DATA is supposed to commit atomically, only on a
+       completed transaction) rather than flipping true on the first
+       byte written, which is what the pre-fix code did. */
+    vault_i2c_registers_on_write_byte(VAULT_REG_CONTEXT_DATA);
+    vault_i2c_registers_on_write_byte(0xAA);
+    vault_i2c_registers_on_write_byte(0xBB);
+
+    /* No vault_i2c_registers_on_stop() call here -- that's the point:
+       the master went away mid-transaction and no STOP was ever seen. */
+    TEST_ASSERT(!vault_state_context_valid());
+}
+
 static void test_context_data_write_beyond_size_is_clamped(void) {
     vault_test_reset_all();
 
@@ -141,6 +158,7 @@ int main(void) {
     RUN_TEST(test_protocol_version);
     RUN_TEST(test_context_length_roundtrip_and_clamp);
     RUN_TEST(test_context_data_roundtrip_and_valid_flag);
+    RUN_TEST(test_context_data_write_without_stop_does_not_set_valid);
     RUN_TEST(test_context_data_write_beyond_size_is_clamped);
     RUN_TEST(test_command_done_only_after_stop);
     RUN_TEST(test_done_requested_resets_for_new_cycle);

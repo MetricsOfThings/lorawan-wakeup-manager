@@ -16,11 +16,32 @@ static bool     s_context_valid;
 static uint32_t s_wake_interval_sec;
 static uint32_t s_wake_interval_staging;
 
-static int      s_active_reg = REG_NONE;
-static uint16_t s_field_offset;
-static bool     s_have_pointer;
-static bool     s_pending_done;
-static bool     s_done_requested;
+/* These fields are written from I2C ISR context on real hardware
+   (platform_lpc810_i2c.c's I2C0_IRQHandler, platform_stm32u031.c's
+   HAL_I2C_* callbacks invoked from I2C1_IRQHandler) and read from
+   vault_core_step()'s busy-wait loop on the main "thread" -- volatile
+   is required so the compiler can't cache a stale value across the
+   loop's iterations or reorder the ISR's writes away, which would
+   otherwise only happen to work by accident at -O0 and could break
+   under LTO or -Os. */
+static volatile int      s_active_reg = REG_NONE;
+static volatile uint16_t s_field_offset;
+static volatile bool     s_have_pointer;
+static volatile bool     s_pending_done;
+static volatile bool     s_done_requested;
+
+/* Set when a REG_CONTEXT_DATA write byte lands during the current
+   transaction; checked (and cleared) in vault_i2c_registers_on_stop() to
+   decide whether the transaction completed and s_context_valid should
+   flip to true. This makes CONTEXT_DATA commit atomically per the spec:
+   a master that dies mid-write (no STOP ever seen) leaves
+   s_context_valid at whatever it was before, instead of flipping it true
+   on a half-written buffer as the previous first-byte-sets-it-immediately
+   logic did. Not ISR-shared beyond the same on_write_byte/on_stop pair
+   that s_have_pointer etc. already are, so it follows their volatile
+   treatment for consistency even though it's only touched within a
+   single transaction's ISR callbacks. */
+static volatile bool s_context_data_written_this_transaction;
 
 void vault_i2c_registers_on_write_byte(uint8_t byte) {
     if (!s_have_pointer) {
@@ -51,7 +72,7 @@ void vault_i2c_registers_on_write_byte(uint8_t byte) {
     case REG_CONTEXT_DATA:
         if (s_field_offset < VAULT_CONTEXT_SIZE) {
             s_context[s_field_offset] = byte;
-            s_context_valid = true;
+            s_context_data_written_this_transaction = true;
         }
         break;
     case REG_COMMAND:
@@ -123,6 +144,10 @@ void vault_i2c_registers_on_stop(void) {
         s_done_requested = true;
         s_pending_done = false;
     }
+    if (s_context_data_written_this_transaction) {
+        s_context_valid = true;
+        s_context_data_written_this_transaction = false;
+    }
     s_have_pointer = false;
     s_field_offset = 0;
     s_active_reg = REG_NONE;
@@ -134,6 +159,7 @@ void vault_i2c_registers_reset_for_cycle(void) {
     s_have_pointer = false;
     s_field_offset = 0;
     s_active_reg = REG_NONE;
+    s_context_data_written_this_transaction = false;
 }
 
 bool vault_i2c_registers_done_requested(void) {
