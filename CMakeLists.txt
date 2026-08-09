@@ -15,7 +15,15 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(NOT DEFINED VAULT_CONTEXT_SIZE)
     if(VAULT_TARGET STREQUAL "lpc810")
-        set(VAULT_CONTEXT_SIZE 64)
+        # 320 = RadioLib's actual persisted-state requirement:
+        # RADIOLIB_LORAWAN_NONCES_BUF_SIZE (14) +
+        # RADIOLIB_LORAWAN_SESSION_BUF_SIZE (302) = 316, rounded up.
+        # Comfortably fits the LPC810's 1 KB SRAM (596 B of 1024 B used
+        # at this size, leaving headroom beyond the reserved 256 B
+        # stack) -- the linker-enforced absolute ceiling is 746 B, but
+        # that leaves no real safety margin, so this uses a real
+        # library's requirement instead of the theoretical max.
+        set(VAULT_CONTEXT_SIZE 320)
     elseif(VAULT_TARGET STREQUAL "stm32u031")
         set(VAULT_CONTEXT_SIZE 128)
     else()

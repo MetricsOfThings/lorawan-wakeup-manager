@@ -99,12 +99,14 @@ main MCU's LoRaWAN stack or protocol version changes.
 
 - Buffer: `uint8_t vault_context[VAULT_CONTEXT_SIZE]`, `VAULT_CONTEXT_SIZE`
   a compile-time constant per target.
-- **LPC810 default: 64 bytes.** The LPC810 has only 1 KB of total SRAM,
-  which must also hold the stack and all other statics — the analysis
-  report's "production" context estimate (256–512 bytes) would consume a
-  quarter to half of the entire chip's RAM by itself. 64 bytes is enough
-  to exercise the protocol end-to-end without starving the rest of the
-  firmware; it is not meant to hold a full production LoRaWAN 1.1 context.
+- **LPC810 default: 320 bytes.** Sized to RadioLib's actual persisted-state
+  requirement (`RADIOLIB_LORAWAN_NONCES_BUF_SIZE` + `RADIOLIB_LORAWAN_SESSION_BUF_SIZE`
+  = 14 + 302 = 316, rounded up), not an arbitrary guess. The LPC810 has only
+  1 KB of total SRAM, which must also hold the stack and all other statics,
+  but 320 bytes fits comfortably (596 of 1024 bytes used, confirmed by build)
+  — the linker-enforced absolute ceiling on this part is 746 bytes, but that
+  leaves no real safety margin against stack growth, so this uses a real
+  library's requirement instead of the theoretical max.
 - **STM32U031F8P6 default: 128 bytes.** Covers the LoRaWAN 1.1 minimum
   (80 bytes) plus headroom for ADR/channel-mask state, with plenty of
   margin against its 12 KB SRAM — no comparable size pressure to the

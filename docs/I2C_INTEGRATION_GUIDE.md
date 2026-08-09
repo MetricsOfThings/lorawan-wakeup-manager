@@ -178,21 +178,27 @@ integrating with:
 
 | Vault MCU | `VAULT_CONTEXT_SIZE` |
 |---|---|
-| LPC810 | 64 bytes |
+| LPC810 | 320 bytes |
 | STM32U031F8P6 | 128 bytes |
 
 This matters because LoRaWAN 1.0.x and 1.1 sessions are different sizes:
 
-| LoRaWAN version | Minimum session footprint | Fits in LPC810's 64 B? | Fits in STM32U031F8P6's 128 B? |
+| LoRaWAN version | Minimum session footprint | Fits in LPC810's 320 B? | Fits in STM32U031F8P6's 128 B? |
 |---|---|---|---|
 | 1.0.x | 40 B (DevAddr, NwkSKey, AppSKey, FCntUp) | Yes | Yes |
-| 1.1 | 80 B (DevAddr, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey, FCntUp, NFCntDown, AFCntDown) | **No** | Yes |
+| 1.1 | 80 B (DevAddr, FNwkSIntKey, SNwkSIntKey, NwkSEncKey, AppSKey, FCntUp, NFCntDown, AFCntDown) | Yes | Yes |
 
-If your stack tracks additional state beyond the bare session (ADR
-parameters, channel masks, link-check tokens — commonly 256–512 B in
-full-featured stacks like LoRaMAC-node), that likely won't fit in either
-variant's `CONTEXT_DATA` buffer. In that case, store only the fields you
-actually need to skip a re-join (the table above) and let your stack
+**Where the LPC810's 320-byte figure comes from:** it's sized to
+[RadioLib](https://github.com/jgromes/RadioLib)'s actual persisted-state
+requirement, not a round number — `RADIOLIB_LORAWAN_NONCES_BUF_SIZE` (14
+bytes) + `RADIOLIB_LORAWAN_SESSION_BUF_SIZE` (302 bytes) = 316, rounded up.
+If you're using a different LoRaWAN stack, check its own persisted-state
+size the same way — a full-featured stack like LoRaMAC-node tracking ADR
+parameters, channel masks, and link-check tokens can run 256–512+ bytes,
+which may or may not fit depending on which Vault variant you're
+targeting and how much of that state you actually need to persist across
+sleep. If it doesn't fit, store only the fields you need to skip a
+re-join (the LoRaWAN-version table above) and let your stack
 recompute/re-negotiate the rest after each wake.
 
 If you write more bytes than `VAULT_CONTEXT_SIZE` in one `CONTEXT_DATA`
