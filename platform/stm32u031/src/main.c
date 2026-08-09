@@ -25,6 +25,14 @@ void SystemClock_Config(void) {
 }
 
 int main(void) {
+    /* platform_enter_low_power_sleep() calls SystemClock_Config() on
+       resume from Stop 2 (the clock tree needs reconfiguring after
+       exiting stop mode), but that left the very first boot without any
+       clock tree configuration at all -- HAL_Init() alone doesn't set up
+       the MSI/SYSCLK tree SystemClock_Config() defines. Call it here so
+       the first pass through platform_init()/vault_core_init() runs
+       with the intended clock configuration too. */
+    SystemClock_Config();
     platform_init();
     vault_core_init();
     for (;;) {

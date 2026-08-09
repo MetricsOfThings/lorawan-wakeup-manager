@@ -53,6 +53,31 @@ void platform_bus_isolate(void) {
 }
 
 static void rtc_init(void) {
+    /* The RTC lives in the backup domain, which is write-protected by
+       default -- HAL_PWR_EnableBkUpAccess() must run before touching any
+       RTC/backup-domain register (including its clock source select and
+       __HAL_RCC_RTC_ENABLE()) or those writes silently have no effect.
+       Verify against the STM32U031 reference manual's "Backup domain"
+       section that DBP really does gate __HAL_RCC_RTC_ENABLE() the way
+       it does on other STM32 families before flashing. */
+    HAL_PWR_EnableBkUpAccess();
+
+    /* Select the RTC clock source. LSI is used as a placeholder since no
+       board exists yet to confirm whether an LSE crystal is fitted --
+       the same "no board to confirm against" reasoning SystemClock_Config()
+       already applies to MSI vs the rest of the clock tree. Revisit once
+       hardware exists: LSE (typically 32.768 kHz) is normally preferred
+       for RTC timekeeping accuracy over LSI's much looser tolerance. */
+    RCC_OscInitTypeDef lsi_osc_init = {0};
+    lsi_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+    lsi_osc_init.LSIState = RCC_LSI_ON;
+    HAL_RCC_OscConfig(&lsi_osc_init);
+
+    RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
+    periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+    HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
+
     __HAL_RCC_RTC_ENABLE();
     s_rtc_handle.Instance = RTC;
     s_rtc_handle.Init.HourFormat = RTC_HOURFORMAT_24;
@@ -60,6 +85,33 @@ static void rtc_init(void) {
     s_rtc_handle.Init.SynchPrediv = 255;
     s_rtc_handle.Init.OutPut = RTC_OUTPUT_DISABLE;
     HAL_RTC_Init(&s_rtc_handle);
+
+    /* Enable the RTC/TAMP combined NVIC line so RTC_TAMP_IRQHandler
+       (below) actually fires when the wakeup timer elapses -- mirrors
+       how platform_i2c_slave_init() enables I2C1_IRQn right after
+       HAL_I2C_Init(). Without this, WKT-equivalent behavior on this
+       backend would have the same "vectors into Default_Handler" bug
+       Critical #1 fixed on the LPC810 side. RTC_TAMP_IRQn (IRQ 2) is the
+       combined RTC+TAMP line per stm32u031xx.h -- this device does not
+       split them onto separate NVIC lines the way some other STM32
+       families do. */
+    HAL_NVIC_SetPriority(RTC_TAMP_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(RTC_TAMP_IRQn);
+}
+
+void RTC_TAMP_IRQHandler(void) {
+    /* HAL_RTCEx_WakeUpTimerIRQHandler() clears WUTF internally and then
+       invokes HAL_RTCEx_WakeUpTimerEventCallback(), which
+       platform_wakeup_timer_clear() below overrides -- verify that
+       chain (in particular, that WUTF clearing happens before the
+       callback and not after) against stm32u0xx_hal_rtc_ex.c before
+       relying on it. */
+    HAL_RTCEx_WakeUpTimerIRQHandler(&s_rtc_handle);
+}
+
+void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc) {
+    (void)hrtc;
+    platform_wakeup_timer_clear();
 }
 
 void platform_wakeup_timer_arm(uint32_t seconds) {
