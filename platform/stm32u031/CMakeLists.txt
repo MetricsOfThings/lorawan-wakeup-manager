@@ -18,10 +18,26 @@ target_include_directories(vault_stm32u031_hal_check PRIVATE
 target_compile_definitions(vault_stm32u031_hal_check PRIVATE STM32U031xx)
 target_compile_options(vault_stm32u031_hal_check PRIVATE -mcpu=cortex-m0plus -mthumb)
 
+set(STM32_HAL_DRIVER_SOURCES
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_cortex.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_gpio.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_rcc.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_rcc_ex.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_pwr.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_pwr_ex.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_rtc.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_rtc_ex.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_i2c.c
+    ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_i2c_ex.c
+)
+
 add_executable(vault_stm32u031
     ${STM32CUBE_U0_ROOT}/Drivers/CMSIS/Device/ST/STM32U0xx/Source/Templates/gcc/startup_stm32u031xx.s
     ${STM32CUBE_U0_ROOT}/Drivers/CMSIS/Device/ST/STM32U0xx/Source/Templates/system_stm32u0xx.c
+    ${STM32_HAL_DRIVER_SOURCES}
     src/main.c
+    src/platform_stm32u031.c
     src/libc_stubs.c
 )
 
@@ -37,6 +53,14 @@ target_link_options(vault_stm32u031 PRIVATE
     -T${CMAKE_CURRENT_SOURCE_DIR}/linker/stm32u031f8.ld
     -Wl,-Map=vault_stm32u031.map
 )
+
+# vault_core has no per-target compile options of its own (it's shared
+# with host_mock and platform_lpc810); force Thumb/Cortex-M0+ codegen
+# here to match vault_stm32u031's other objects, the same fix Task 9
+# needed for vault_lpc810 -- otherwise the link fails with "Unknown
+# destination type (ARM/Thumb)" because vault_core would default to ARM.
+target_link_libraries(vault_stm32u031 PRIVATE vault_core)
+target_compile_options(vault_core PRIVATE -mcpu=cortex-m0plus -mthumb)
 
 add_custom_command(TARGET vault_stm32u031 POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_stm32u031>
