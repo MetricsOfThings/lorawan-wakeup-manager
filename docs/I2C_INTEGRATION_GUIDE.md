@@ -36,7 +36,7 @@ from reset exactly as if a battery had just been inserted.
 |---|---|---|
 | I2C SDA | LPC810: `PIO0_1` · STM32U031F8P6: `PA10` | See §2.1 on pull-ups. On LPC810 this pin doubles as the chip's own ISP-entry pin — see the note below the table |
 | I2C SCL | LPC810: `PIO0_4` · STM32U031F8P6: `PA9` | See §2.1 on pull-ups |
-| Your MCU's power rail, switched | Driven by LPC810 `PIO0_0` · STM32U031F8P6 `PA0` | High = your rail powered on |
+| Your MCU's power rail, switched | Driven by LPC810 `PIO0_0` · STM32U031F8P6 `PA0` | High = your rail powered on. See §2.2 for the switching circuit itself — this pin is a GPIO, not a power output |
 
 **Why LPC810 uses `PIO0_1`/`PIO0_4` and not a nicer pair:** the LPC810 ships only in an 8-pin package, which brings out just `PIO0_0` through `PIO0_5` — six pins total, of which `PIO0_0` (rail enable), `PIO0_2`/`PIO0_3` (SWD), and `PIO0_5` (reset) are already committed, leaving exactly two free. `PIO0_1` is also the LPC810's own ISP-entry pin, sampled by its boot ROM on every reset; since this design intentionally puts I2C pull-ups on your MCU's switched rail rather than the Vault's own rail (§2.1), that line is unpowered during the Vault's own power-up, before your rail has ever been turned on. This is a known, accepted trade-off of the 8-pin package, not an oversight — worth being aware of if you're debugging a Vault that unexpectedly boots into ISP mode instead of running.
 
@@ -66,6 +66,73 @@ high-impedance analog state (no internal pull-up/down) before it ever cuts
 your rail, specifically so its GPIOs can't back-feed your powered-down MCU
 through their ESD protection diodes. You don't need to do anything for this
 on your side — just get the external pull-up placement right.
+
+### 2.2 Power switching circuit — what actually sits between the Vault and your MCU's `VDD`
+
+The Vault's rail-enable pin (`PIO0_0` on LPC810, `PA0` on STM32U031F8P6) is a
+GPIO, not a power output — it can't itself deliver the current your MCU
+needs. You need an external switch between the battery/regulated rail and
+your MCU's `VDD`, controlled by that pin. Two things matter here: **switch
+the supply side, not the ground side** (a P-channel high-side switch, not
+an N-channel low-side one), and pick a device whose own off-state leakage
+doesn't undo the Vault's sub-microamp sleep current.
+
+**Why high-side, not low-side:** switching your MCU's ground return instead
+of its supply reintroduces the exact parasitic-back-powering risk described
+in §2.1 for the I2C lines — if your MCU's `VDD` stays connected while only
+its ground floats, current can sneak back through its own I/O ESD diodes via
+any other wire still connected to it. Switching the supply avoids this
+entirely: when off, your MCU has no power source at all, full stop.
+
+**Why a MOSFET (or dedicated load-switch IC) rather than a regulator's
+`EN` pin, if your MCU shares the Vault's own regulated rail:** a bare
+MOSFET's off-state leakage is pure semiconductor junction leakage, often
+achievable in the single-digit-nanoamp range with a well-chosen part — the
+same order of magnitude as the sleep currents this whole design targets. If
+your MCU instead needs its *own* regulated voltage (different from the
+Vault's), you need a regulator there regardless for the conversion, and
+should use *that* regulator's own `EN`/shutdown pin instead of adding a
+separate switch on top of it — just pick one with a genuinely low shutdown
+current, since regulator shutdown modes commonly draw several microamps
+continuously, which can end up dominating your total sleep current more
+than the microcontroller itself does.
+
+A classic 2-transistor high-side P-channel switch, using only common,
+easily-sourced parts:
+
+```
+Battery / regulated rail ──┬──────────────┐
+                            │              │
+                          [R1, ~47k]     Source
+                            │              │ (P-channel MOSFET,
+Vault rail-enable pin ──[R2]● NPN base   Gate ──┘  e.g. BS250/AO3401)
+                            │              │
+                           NPN            Drain ── to your MCU's VDD
+                            │              (e.g. 2N3904/BC547)
+                           GND
+```
+
+- Vault drives the rail-enable pin **high** → the NPN turns on → pulls the
+  P-channel MOSFET's gate down near ground → with its source sitting at the
+  battery rail, that's a large negative `Vgs` → the MOSFET turns **on**,
+  powering your MCU.
+- Vault drives it **low** → NPN off → `R1` pulls the MOSFET's gate back up
+  to the battery rail → `Vgs ≈ 0` → MOSFET turns **off**.
+- `R1` (gate pull-up, ~47 kΩ) gives the gate a defined "off" state whenever
+  the NPN isn't actively pulling it down — without it, the switch's state
+  is undefined when idle.
+- `R2` (NPN base resistor, ~10 kΩ) just limits base current from the
+  Vault's GPIO.
+
+This topology works with any small-signal P-channel MOSFET and NPN — it
+doesn't depend on the MOSFET having a "logic-level" gate threshold, since
+the NPN stage already provides a large `Vgs` swing regardless of the
+Vault's own 3.3 V logic level. A dedicated load-switch IC (e.g. TI
+TPS22860, ON Semi NCP380) replaces this whole discrete circuit with a
+single part wired directly to the rail-enable GPIO, and is worth
+considering once you move past a bench prototype — some also add
+soft-start, limiting the inrush current spike when your MCU's decoupling
+capacitors first charge.
 
 ---
 
