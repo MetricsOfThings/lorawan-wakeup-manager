@@ -1,9 +1,10 @@
-void lpc810_gpio_init(void);
-void lpc810_timer_init(void);
+#include "vault/vault_core.h"
+#include "vault/platform.h"
 
 int main(void) {
-    lpc810_gpio_init();
-    lpc810_timer_init();
-
-    while (1) { }
+    platform_init();
+    vault_core_init();
+    for (;;) {
+        vault_core_step();
+    }
 }

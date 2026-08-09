@@ -15,6 +15,7 @@ add_executable(vault_lpc810
     src/platform_lpc810_gpio.c
     src/platform_lpc810_timer.c
     src/platform_lpc810_i2c.c
+    src/platform_lpc810_power.c
 )
 
 target_include_directories(vault_lpc810 PRIVATE
