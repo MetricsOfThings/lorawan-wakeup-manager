@@ -38,13 +38,29 @@
 #define UART_BRGVAL 12u /* (12000000 / (16 * 57600)) - 1, rounded; actual rate 57692 baud, 0.16% error */
 
 void lpc810_uart_init(void) {
-    /* Release PIO0_5 from its fixed RESET function so it can carry a
-       movable function instead. Verify the bit polarity (0 here means
-       "disabled/released") against UM10601's "Pin enable register"
-       description before relying on it. */
-    SWM0->PINENABLE0 &= ~SWM_PINENABLE0_RESET_MASK;
-
+    /* SWM's own clock must be enabled before its registers can be
+       reliably written -- matching the working pattern already used in
+       platform_lpc810_i2c.c's lpc810_i2c_pins_to_i2c_function(), which
+       enables SYSCON_SYSAHBCLKCTRL_SWM_MASK before touching any SWM
+       register. This must come before the PINENABLE0 write below, not
+       after: writing to SWM while unclocked was silently ignored,
+       leaving PIO0_5 stuck in its default RESET function and never
+       actually routed to U0_TXD. */
     SYSCON->SYSAHBCLKCTRL |= SYSCON_SYSAHBCLKCTRL_SWM_MASK | SYSCON_SYSAHBCLKCTRL_UART0_MASK;
+
+    /* Release PIO0_5 from its fixed RESET function so it can carry a
+       movable function instead. Confirmed on real hardware (Task 11)
+       that this bit is active-LOW, opposite of what the register's own
+       name ("Pin enable register") suggests: while connected live via
+       SWD, PINENABLE0 read back with the SWCLK/SWDIO/RESET bits all at
+       0 -- the only sensible reading, since those fixed functions were
+       demonstrably still active (SWD was working; RESET's fixed
+       function was still claiming PIO0_5, which is why U0_TXD's
+       correctly-configured SWM routing never reached the physical pin).
+       So 0 = fixed function ACTIVE, 1 = released to a movable function
+       -- the previous `&= ~MASK` (clearing the bit) was keeping RESET
+       active, not releasing it. */
+    SWM0->PINENABLE0 |= SWM_PINENABLE0_RESET_MASK;
 
     /* Bring USART0 out of reset. Verify against UM10601 "Peripheral
        reset control register" whether this is actually necessary on
