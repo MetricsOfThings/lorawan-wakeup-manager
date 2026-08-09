@@ -54,13 +54,10 @@ target_link_options(vault_stm32u031 PRIVATE
     -Wl,-Map=vault_stm32u031.map
 )
 
-# vault_core has no per-target compile options of its own (it's shared
-# with host_mock and platform_lpc810); force Thumb/Cortex-M0+ codegen
-# here to match vault_stm32u031's other objects, the same fix Task 9
-# needed for vault_lpc810 -- otherwise the link fails with "Unknown
-# destination type (ARM/Thumb)" because vault_core would default to ARM.
+# vault_core's own -mcpu/-mthumb/-Os compile options are set in
+# core/CMakeLists.txt, keyed on VAULT_TARGET, rather than duplicated here
+# (the same fix Task 9 needed for vault_lpc810, now consolidated).
 target_link_libraries(vault_stm32u031 PRIVATE vault_core)
-target_compile_options(vault_core PRIVATE -mcpu=cortex-m0plus -mthumb)
 
 add_custom_command(TARGET vault_stm32u031 POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_stm32u031>
