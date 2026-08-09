@@ -17,6 +17,12 @@ SECTIONS
     {
         *(.text*)
         *(.rodata*)
+        . = ALIGN(4); /* _sidata (below) must be word-aligned: the
+                          startup .data-copy loop uses ldmia, which
+                          HardFaults on Cortex-M0+ if its source address
+                          isn't 4-byte aligned. Without this, alignment
+                          depends on .text+.rodata's total size landing
+                          on a lucky boundary by accident. */
     } > FLASH
 
     _sidata = LOADADDR(.data);

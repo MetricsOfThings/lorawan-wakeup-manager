@@ -46,6 +46,15 @@ target_link_options(vault_lpc810 PRIVATE
     -Wl,-Map=vault_lpc810.map
 )
 
+# CMake doesn't infer that a raw -T flag makes the linker script a link
+# input, so editing it alone (no source file touched) can silently
+# reuse a stale link -- this is exactly what masked the _sidata
+# alignment fix below during Task 11 bring-up until a full rm -rf
+# forced a relink.
+set_target_properties(vault_lpc810 PROPERTIES
+    LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker/lpc810.ld
+)
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 # The LPC8xx boot ROM only treats an image as valid application code if

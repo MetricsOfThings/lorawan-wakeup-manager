@@ -54,6 +54,12 @@ target_link_options(vault_stm32u031 PRIVATE
     -Wl,-Map=vault_stm32u031.map
 )
 
+# See the matching comment in platform/lpc810/CMakeLists.txt: a raw -T
+# flag isn't tracked as a link input by CMake on its own.
+set_target_properties(vault_stm32u031 PROPERTIES
+    LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker/stm32u031f8.ld
+)
+
 # vault_core's own -mcpu/-mthumb/-Os compile options are set in
 # core/CMakeLists.txt, keyed on VAULT_TARGET, rather than duplicated here
 # (the same fix Task 9 needed for vault_lpc810, now consolidated).
