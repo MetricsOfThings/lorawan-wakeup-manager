@@ -34,11 +34,11 @@ from reset exactly as if a battery had just been inserted.
 
 | Signal | Vault side (reference implementation pin) | Notes |
 |---|---|---|
-| I2C SDA | LPC810: `PIO0_1` · STM32U031F8P6: `PA10` | See §2.1 on pull-ups. On LPC810 this pin doubles as the chip's own ISP-entry pin — see the note below the table |
-| I2C SCL | LPC810: `PIO0_4` · STM32U031F8P6: `PA9` | See §2.1 on pull-ups |
-| Your MCU's power rail, switched | Driven by LPC810 `PIO0_0` · STM32U031F8P6 `PA0` | High = your rail powered on. See §2.2 for the switching circuit itself — this pin is a GPIO, not a power output |
+| I2C SDA | LPC810: `PIO0_1` · STM32U031F8P6: `PA10` | See §2.2 on pull-ups. On LPC810 this pin doubles as the chip's own ISP-entry pin — see the note below the table |
+| I2C SCL | LPC810: `PIO0_4` · STM32U031F8P6: `PA9` | See §2.2 on pull-ups |
+| Your MCU's power rail, switched | Driven by LPC810 `PIO0_0` · STM32U031F8P6 `PA0` | High = your rail powered on. See §2.3 for the switching circuit itself — this pin is a GPIO, not a power output |
 
-**Why LPC810 uses `PIO0_1`/`PIO0_4` and not a nicer pair:** the LPC810 ships only in an 8-pin package, which brings out just `PIO0_0` through `PIO0_5` — six pins total, of which `PIO0_0` (rail enable), `PIO0_2`/`PIO0_3` (SWD), and `PIO0_5` (reset) are already committed, leaving exactly two free. `PIO0_1` is also the LPC810's own ISP-entry pin, sampled by its boot ROM on every reset; since this design intentionally puts I2C pull-ups on your MCU's switched rail rather than the Vault's own rail (§2.1), that line is unpowered during the Vault's own power-up, before your rail has ever been turned on. This is a known, accepted trade-off of the 8-pin package, not an oversight — worth being aware of if you're debugging a Vault that unexpectedly boots into ISP mode instead of running.
+**Why LPC810 uses `PIO0_1`/`PIO0_4` and not a nicer pair:** the LPC810 ships only in an 8-pin package, which brings out just `PIO0_0` through `PIO0_5` — six pins total, of which `PIO0_0` (rail enable), `PIO0_2`/`PIO0_3` (SWD), and `PIO0_5` (reset) are already committed, leaving exactly two free. `PIO0_1` is also the LPC810's own ISP-entry pin, sampled by its boot ROM on every reset; since this design intentionally puts I2C pull-ups on your MCU's switched rail rather than the Vault's own rail (§2.2), that line is unpowered during the Vault's own power-up, before your rail has ever been turned on. This is a known, accepted trade-off of the 8-pin package, not an oversight — worth being aware of if you're debugging a Vault that unexpectedly boots into ISP mode instead of running.
 
 The Vault's I2C slave address is **`0x42`** (7-bit).
 
@@ -46,7 +46,22 @@ The pin numbers above are the reference firmware's defaults and may be
 re-mapped per board — confirm against your actual schematic, since these are
 firmware-configurable, not fixed by the I2C protocol itself.
 
-### 2.1 Pull-up placement — read this before wiring
+### 2.1 Bus speed
+
+The Vault runs its I2C slave at **Fast-mode, 400 kHz**, on both reference
+backends — configure your master for 400 kHz. This matters directly for your
+own power budget: your MCU is powered the entire time it's talking to the
+Vault, so a faster bus means less time spent powered per wake cycle,
+particularly for the `CONTEXT_DATA` transfer (up to 320 bytes each way).
+
+Your master doesn't need to do anything to negotiate this — I2C bus speed is
+set by the master's clock generation, and the Vault's slave logic just
+tracks whatever your master drives, up to its own 400 kHz ceiling. Driving
+the bus faster than 400 kHz is not supported by either backend and is
+outside the I2C Fast-mode electrical spec these pull-up/wiring
+recommendations assume.
+
+### 2.2 Pull-up placement — read this before wiring
 
 This is the one wiring detail that will silently break your battery life if
 you get it wrong. **I2C pull-up resistors must be tied to your MCU's own
@@ -67,7 +82,7 @@ your rail, specifically so its GPIOs can't back-feed your powered-down MCU
 through their ESD protection diodes. You don't need to do anything for this
 on your side — just get the external pull-up placement right.
 
-### 2.2 Power switching circuit — what actually sits between the Vault and your MCU's `VDD`
+### 2.3 Power switching circuit — what actually sits between the Vault and your MCU's `VDD`
 
 The Vault's rail-enable pin (`PIO0_0` on LPC810, `PA0` on STM32U031F8P6) is a
 GPIO, not a power output — it can't itself deliver the current your MCU
@@ -79,7 +94,7 @@ doesn't undo the Vault's sub-microamp sleep current.
 
 **Why high-side, not low-side:** switching your MCU's ground return instead
 of its supply reintroduces the exact parasitic-back-powering risk described
-in §2.1 for the I2C lines — if your MCU's `VDD` stays connected while only
+in §2.2 for the I2C lines — if your MCU's `VDD` stays connected while only
 its ground floats, current can sneak back through its own I/O ESD diodes via
 any other wire still connected to it. Switching the supply avoids this
 entirely: when off, your MCU has no power source at all, full stop.
@@ -262,7 +277,7 @@ Every cycle looks like this from your MCU's perspective:
    because the protocol requires it.
 
 The Vault, on its side: turns your rail off, puts the I2C pins into
-high-impedance (§2.1), arms its wake timer for whatever `WAKE_INTERVAL_SEC`
+high-impedance (§2.2), arms its wake timer for whatever `WAKE_INTERVAL_SEC`
 currently holds, and sleeps until that timer fires — at which point step 1
 happens again.
 

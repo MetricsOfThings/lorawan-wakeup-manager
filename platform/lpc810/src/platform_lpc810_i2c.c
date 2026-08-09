@@ -47,6 +47,20 @@ void platform_i2c_slave_init(uint8_t addr) {
        against UM10601 "Slave Address 0 register" before flashing. */
     I2C0->SLVADR[0] = I2C_SLVADR_SLVADR(addr);
 
+    /* CLKDIV generates this peripheral's internal I2C_CLK (= main clock /
+       (DIVVAL+1), per the vendored header's own CLKDIV field description)
+       used for slave-mode bus timing/digital filtering; unlike a real
+       master, this slave never uses MSTTIME to generate SCL, but a
+       sufficiently fast I2C_CLK is still needed to reliably track a
+       400 kHz Fast-mode master's SCL/SDA edges. DIVVAL=0 selects
+       divide-by-1, i.e. I2C_CLK == the nominal 12 MHz main clock (see
+       platform_lpc810_uart.c's IRC assumption) -- 30x the 400 kHz bus
+       rate, comfortably oversampled. Verify this DIVVAL encoding
+       (divide-by-(DIVVAL+1) vs a direct divisor) and the actual minimum
+       I2C_CLK needed for reliable Fast-mode slave operation against
+       UM10601's I2C chapter before flashing. */
+    I2C0->CLKDIV = I2C_CLKDIV_DIVVAL(0u);
+
     /* Enable I2C0 slave function and its interrupt. Verify CFG.SLVEN bit
        position and confirm I2C0_IRQn's value in LPC8xx.h matches the
        vector table position in startup_lpc810.c, per the note left there

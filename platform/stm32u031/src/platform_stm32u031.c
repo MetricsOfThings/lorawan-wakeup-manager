@@ -154,16 +154,43 @@ static void i2c_pins_init(void) {
     HAL_GPIO_Init(I2C_SDA_PORT, &gpio_init);
 }
 
+static void i2c1_clock_source_init(void) {
+    /* I2C1's kernel clock defaults to PCLK1, which tracks the low-power
+       main clock (MSI, kept slow for power per SystemClock_Config()) --
+       far too slow to reach 400 kHz Fast-mode. Switching I2C1's kernel
+       clock source to HSI (16 MHz, fixed) decouples I2C bus timing from
+       the main clock choice, matching how the RTC's clock source is
+       already selected independently in rtc_init() above. HSI must be
+       explicitly turned on first: unlike MSI it is not guaranteed
+       running at this point since SystemClock_Config() only configures
+       MSI. */
+    __HAL_RCC_HSI_ENABLE();
+
+    RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
+    periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
+    periph_clk_init.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
+    HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
+}
+
 void platform_i2c_slave_init(uint8_t addr) {
+    i2c1_clock_source_init();
     __HAL_RCC_I2C1_CLK_ENABLE();
     i2c_pins_init();
 
     s_i2c_handle.Instance = I2C1;
-    s_i2c_handle.Init.Timing = 0x00303D5B; /* 100 kHz at an assumed 16 MHz
-                                               I2C clock -- verify against
-                                               CubeMX's timing calculator
-                                               for the real clock config
-                                               before flashing */
+    /* Fast-mode (400 kHz) at a 16 MHz I2C kernel clock (HSI, selected
+       above), computed by hand from ST's TIMINGR formula
+       (t_SCL = t_SYNC1 + t_SYNC2 + [(SCLH+1)+(SCLL+1)] x (PRESC+1) x
+       t_I2CCLK) rather than taken from a verified CubeMX/datasheet
+       table -- PRESC=3, SCLDEL=2, SDADEL=0, SCLH=3, SCLL=6 gives
+       t_I2CCLK=62.5ns, t_PRESC=250ns, SCLH=1000ns, SCLL=1750ns, for an
+       estimated ~348 kHz actual SCL (safely under the 400 kHz Fast-mode
+       ceiling, assuming a ~125 ns SYNC1+SYNC2 analog-filter delay this
+       hand calculation can't measure precisely). Re-derive and confirm
+       this value with CubeMX's timing calculator or a scope before
+       flashing -- same caveat this file already applies to the 100 kHz
+       constant this replaces. */
+    s_i2c_handle.Init.Timing = 0x30200306;
     s_i2c_handle.Init.OwnAddress1 = (uint32_t)(addr << 1);
     s_i2c_handle.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
     s_i2c_handle.Init.OwnAddress2 = 0;
