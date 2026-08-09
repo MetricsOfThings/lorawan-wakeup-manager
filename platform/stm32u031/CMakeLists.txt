@@ -59,6 +59,17 @@ target_link_options(vault_stm32u031 PRIVATE
 # (the same fix Task 9 needed for vault_lpc810, now consolidated).
 target_link_libraries(vault_stm32u031 PRIVATE vault_core)
 
+# VAULT_LOG_ENABLED (core/CMakeLists.txt) drives core/'s vault_log()
+# calls; this backend's implementation uses USART2 on PA2, which -
+# unlike the LPC810 backend - costs no pin trade-off (this part's 16
+# usable I/Os leave PA2 free already).
+if(VAULT_LOG_ENABLED)
+    target_sources(vault_stm32u031 PRIVATE
+        src/platform_stm32u031_uart.c
+        ${STM32CUBE_U0_ROOT}/Drivers/STM32U0xx_HAL_Driver/Src/stm32u0xx_hal_uart.c
+    )
+endif()
+
 add_custom_command(TARGET vault_stm32u031 POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_stm32u031>
 )

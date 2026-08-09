@@ -33,6 +33,11 @@ void platform_init(void) {
     HAL_Init();
     gpio_init();
     rtc_init();
+
+#ifdef VAULT_LOG_ENABLED
+    extern void stm32u031_uart_init(void);
+    stm32u031_uart_init();
+#endif
 }
 
 void platform_main_rail_enable(bool on) {

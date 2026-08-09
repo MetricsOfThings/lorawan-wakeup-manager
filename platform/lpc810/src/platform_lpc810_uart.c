@@ -1,11 +1,13 @@
 #include <stdint.h>
 
 #include "LPC8xx.h"
+#include "vault/vault_log.h"
 
 /* Bring-up/debug-only UART TX on PIO0_5 -- not part of the platform.h
    contract, not linked into production builds. Enabled only when
-   LPC810_DEBUG_UART is defined (see platform/lpc810/CMakeLists.txt's
-   LPC810_DEBUG_UART option).
+   VAULT_LOG_ENABLED is defined (see core/CMakeLists.txt's
+   VAULT_LOG_ENABLED option, which platform/lpc810/CMakeLists.txt reads
+   to decide whether to build this file at all).
 
    PIO0_5 is available here because this design gives up the dedicated
    RESET function entirely (see the pin-budget comment in
@@ -77,4 +79,11 @@ void lpc810_uart_puts(const char *s) {
         }
         lpc810_uart_putc(*s++);
     }
+}
+
+/* core/'s vault_log() contract (vault/vault_log.h). Only called from
+   vault_core's normal thread-mode control flow, never from the I2C0
+   ISR -- see the comment in vault_core.c. */
+void vault_log(const char *msg) {
+    lpc810_uart_puts(msg);
 }

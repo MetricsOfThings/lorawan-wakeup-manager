@@ -9,11 +9,6 @@ target_include_directories(vault_lpc810_cmsis_check PRIVATE
 
 target_compile_options(vault_lpc810_cmsis_check PRIVATE -mcpu=cortex-m0plus -mthumb)
 
-# Bring-up/debug-only UART TX on PIO0_5 (see platform_lpc810_uart.c for
-# why that pin is available). Off by default: it trades away the
-# dedicated RESET pin, which a production build shouldn't do silently.
-option(LPC810_DEBUG_UART "Enable debug-only UART TX logging on PIO0_5 (gives up RESET)" OFF)
-
 add_executable(vault_lpc810
     src/startup_lpc810.c
     src/main.c
@@ -23,9 +18,13 @@ add_executable(vault_lpc810
     src/platform_lpc810_power.c
 )
 
-if(LPC810_DEBUG_UART)
+# VAULT_LOG_ENABLED (core/CMakeLists.txt) drives core/'s vault_log()
+# calls; this backend's implementation of it needs a UART, which on the
+# LPC810's 8-pin package means giving up the dedicated RESET pin (see
+# platform_lpc810_uart.c) -- that trade-off is why this is opt-in rather
+# than always built.
+if(VAULT_LOG_ENABLED)
     target_sources(vault_lpc810 PRIVATE src/platform_lpc810_uart.c)
-    target_compile_definitions(vault_lpc810 PRIVATE LPC810_DEBUG_UART)
 endif()
 
 target_include_directories(vault_lpc810 PRIVATE

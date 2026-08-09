@@ -11,6 +11,18 @@ target_compile_definitions(vault_core PUBLIC
     VAULT_DEFAULT_WAKE_INTERVAL_SEC=60
 )
 
+# Application-level logging (vault_log()/vault_log_u32(), see
+# vault/vault_log.h) is opt-in: off by default, since on the LPC810
+# backend enabling it means giving up the dedicated RESET pin (see
+# platform/lpc810/CMakeLists.txt). PUBLIC so every backend that links
+# vault_core sees the same VAULT_LOG_ENABLED definition, whether or not
+# it needs to provide a vault_log() implementation.
+option(VAULT_LOG_ENABLED "Enable application-level logging via vault_log()" OFF)
+if(VAULT_LOG_ENABLED)
+    target_sources(vault_core PRIVATE src/vault_log.c)
+    target_compile_definitions(vault_core PUBLIC VAULT_LOG_ENABLED)
+endif()
+
 # vault_core is shared across all three backends (host, lpc810, stm32u031)
 # and has no compile options of its own by default, so it would build in
 # ARM mode on the Cortex-M0+ targets and fail to link against Thumb

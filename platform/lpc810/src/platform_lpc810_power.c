@@ -1,7 +1,7 @@
 #include "vault/platform.h"
 #include "LPC8xx.h"
 
-#ifdef LPC810_DEBUG_UART
+#ifdef VAULT_LOG_ENABLED
 #include "platform_lpc810_uart.h"
 #endif
 
@@ -11,9 +11,8 @@ void platform_init(void) {
     lpc810_gpio_init();
     lpc810_timer_init();
 
-#ifdef LPC810_DEBUG_UART
+#ifdef VAULT_LOG_ENABLED
     lpc810_uart_init();
-    lpc810_uart_puts("vault: boot\n");
 #endif
 }
 
@@ -44,16 +43,5 @@ void platform_enter_low_power_sleep(void) {
 
     SCB->SCR |= (1u << 2); /* SLEEPDEEP bit -- verify against ARM CMSIS core header, not UM10601 */
 
-#ifdef LPC810_DEBUG_UART
-    lpc810_uart_puts("vault: sleep\n");
-#endif
-
     __asm volatile ("wfi");
-
-#ifdef LPC810_DEBUG_UART
-    /* If this line is ever missing from the log after a wake, that's
-       direct evidence the chip reset instead of resuming in place --
-       exactly the failure mode Task 11 needs to rule out. */
-    lpc810_uart_puts("vault: wake\n");
-#endif
 }
