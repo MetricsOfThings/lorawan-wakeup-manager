@@ -26,10 +26,10 @@ void (* const g_pfnVectors[])(void) = {
     PendSV_Handler,
     SysTick_Handler,
     /* IRQ0-31, per LPC8xx.h's IRQn_Type enum (confirmed in Task 8 against
-       the vendored header). Only WKT_IRQn (=15) is wired up so far;
-       I2C0_IRQn (=8) is filled in here too since its position is already
-       known, but Task 9 owns actually implementing/verifying it -- for
-       now it points at Default_Handler like the rest of the unused slots.
+       the vendored header). WKT_IRQn (=15) and I2C0_IRQn (=8) both have
+       real handlers now (platform_lpc810_timer.c and
+       platform_lpc810_i2c.c respectively, each overriding the weak
+       Default_Handler alias declared above by strong-symbol linkage).
        Array covers the full IRQ0-31 range per device specification
        (NUMBER_OF_INT_VECTORS = 48: 16 Cortex-M0+ exceptions + 32 device IRQs). */
     0,                  /* IRQ0:  SPI0_IRQn */
@@ -40,7 +40,7 @@ void (* const g_pfnVectors[])(void) = {
     0,                  /* IRQ5:  USART2_IRQn */
     0,                  /* IRQ6:  Reserved22_IRQn */
     0,                  /* IRQ7:  Reserved23_IRQn */
-    I2C0_IRQHandler,    /* IRQ8:  I2C0_IRQn (Task 9 implements) */
+    I2C0_IRQHandler,    /* IRQ8:  I2C0_IRQn */
     0,                  /* IRQ9:  SCT0_IRQn */
     0,                  /* IRQ10: MRT0_IRQn */
     0,                  /* IRQ11: CMP_IRQn */

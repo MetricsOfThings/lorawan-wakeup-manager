@@ -40,3 +40,16 @@ void platform_wakeup_timer_clear(void) {
        UM10601 before relying on this in an ISR. */
     WKT->CTRL |= WKT_CTRL_ALARMFLAG_MASK;
 }
+
+/* Real WKT interrupt handler, overriding the weak Default_Handler alias
+   installed for WKT_IRQHandler in startup_lpc810.c (same override-by-
+   strong-symbol pattern I2C0_IRQHandler already uses in
+   platform_lpc810_i2c.c, from Task 9). Without this, the vector table
+   entry resolves to Default_Handler's while(1){} and the CPU never
+   returns to vault_core_step() after the first sleep. Clearing the
+   alarm flag here is sufficient: there is no per-byte protocol state to
+   drive (unlike I2C), just the countdown-elapsed condition that needs
+   acknowledging so WKT can be rearmed next cycle. */
+void WKT_IRQHandler(void) {
+    platform_wakeup_timer_clear();
+}

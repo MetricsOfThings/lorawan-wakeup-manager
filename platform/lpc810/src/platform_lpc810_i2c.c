@@ -19,8 +19,6 @@
    relying on it to fully undo the assignment in platform_i2c_slave_deinit(). */
 #define SWM_PINASSIGN_UNASSIGNED 0xFFu
 
-static bool s_transaction_in_progress;
-
 static void lpc810_i2c_pins_to_i2c_function(void) {
     SYSCON->SYSAHBCLKCTRL |= SYSCON_SYSAHBCLKCTRL_SWM_MASK;
 
@@ -34,8 +32,6 @@ void platform_i2c_slave_init(uint8_t addr) {
     SYSCON->SYSAHBCLKCTRL |= SYSCON_SYSAHBCLKCTRL_I2C0_MASK;
     lpc810_i2c_pins_to_i2c_function();
 
-    s_transaction_in_progress = false;
-
     /* Slave Address 0 register: 7-bit address in SLVADR_SLVADR (bits
        [7:1]), bit 0 is SADISABLE (0 = address enabled, 1 = disabled) --
        verify this field layout, and in particular the SADISABLE polarity,
@@ -47,7 +43,7 @@ void platform_i2c_slave_init(uint8_t addr) {
        vector table position in startup_lpc810.c, per the note left there
        in Task 6. */
     I2C0->CFG |= I2C_CFG_SLVEN_MASK;
-    I2C0->INTENSET |= I2C_INTENSET_SLVPENDINGEN_MASK;
+    I2C0->INTENSET |= I2C_INTENSET_SLVPENDINGEN_MASK | I2C_INTENSET_SLVDESELEN_MASK;
 
     NVIC_EnableIRQ(I2C0_IRQn);
 }
@@ -72,6 +68,30 @@ void I2C0_IRQHandler(void) {
        sketch assumes 0=ADDR, 1=RX, 2=TX, matching the commonly documented
        LPC81x encoding, but confirm before relying on it). */
     uint32_t stat = I2C0->STAT;
+
+    /* STAT.SLVDESEL (bit 15) is a real, dedicated slave-deselect condition
+       -- distinct from SLVPENDING/SLVSTATE -- that the LPC81x I2C0
+       peripheral sets whenever the slave is deselected, which on this
+       part happens both on a bus STOP and on a repeated START to a
+       different address. This is the mechanism the earlier
+       s_transaction_in_progress heuristic (Task 9) was working around
+       because it hadn't been found yet; it supersedes that heuristic
+       entirely; the last transaction of a wake cycle (the CMD_DONE
+       write) now reliably promotes s_pending_done via
+       vault_i2c_registers_on_stop() even when the master powers down
+       immediately afterward and no subsequent address match ever
+       arrives. Enabled via I2C_INTENSET_SLVDESELEN in
+       platform_i2c_slave_init(). STAT is documented (UM10601 "I2C status
+       register") as write-1-to-clear for this bit; verify that against
+       the manual before flashing, along with whether SLVDESEL can arrive
+       standalone (without SLVPENDING also set) -- this handler assumes
+       it can, and checks for it unconditionally rather than nesting it
+       under the SLVPENDING branch below. */
+    if (stat & I2C_STAT_SLVDESEL_MASK) {
+        I2C0->STAT = I2C_STAT_SLVDESEL_MASK; /* write-1-to-clear -- verify against UM10601 */
+        vault_i2c_registers_on_stop();
+    }
+
     if (!(stat & I2C_STAT_SLVPENDING_MASK)) {
         return;
     }
@@ -80,20 +100,6 @@ void I2C0_IRQHandler(void) {
 
     switch (slvstate) {
     case 0u: /* address match */
-        /* The LPC81x I2C0 slave state machine does not expose a bus-STOP
-           state code distinct from a fresh address match -- a new address
-           match after a prior transaction effectively signals the previous
-           one ended. No dedicated bus-STOP-detected interrupt enable bit
-           was found in this header's I2C_INTENSET_* fields (SLVDESELEN and
-           SLVNOTSTREN exist but are documented as different conditions --
-           slave deselection and clock-stretch timeout, not bus STOP);
-           verify against UM10601 whether a real STOP-detect interrupt
-           exists on this part, and if so, prefer it over this heuristic
-           and remove s_transaction_in_progress. */
-        if (s_transaction_in_progress) {
-            vault_i2c_registers_on_stop();
-        }
-        s_transaction_in_progress = true;
         (void)I2C0->SLVDAT; /* clears the address-match condition on some parts -- verify */
         break;
     case 1u: /* slave receive: master is writing a byte to us */
