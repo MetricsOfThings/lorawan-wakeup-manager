@@ -152,7 +152,7 @@ cannot accidentally overwrite `COMMAND` by writing one byte too many to
 |---|---|---|---|---|
 | `0x00` | `STATUS` | R | 1 B | bit0 = `CONTEXT_VALID` (see §3.1). Bits 1-7 reserved, always read 0. |
 | `0x01` | `PROTOCOL_VERSION` | R | 1 B | Currently `0x01`. Check this before trusting the rest of the map — a future Vault firmware revision would bump this if the register layout ever changes. |
-| `0x02` | `CONTEXT_LENGTH` | R/W | 1 B | How many bytes of `CONTEXT_DATA` are actually meaningful. You set this when writing a new context. |
+| `0x02` | `CONTEXT_LENGTH` | R/W | 2 B, little-endian `uint16_t` | How many bytes of `CONTEXT_DATA` are actually meaningful. You set this when writing a new context. Two bytes because `VAULT_CONTEXT_SIZE` (320) exceeds what a single byte can represent. |
 | `0x03` | `CONTEXT_DATA` | R/W | up to `VAULT_CONTEXT_SIZE` (see §3.2) | Your opaque LoRaWAN session blob. The Vault never parses it. |
 | `0x04` | `COMMAND` | W | 1 B | Write `0x01` (`CMD_DONE`) when you're finished — see §4. |
 | `0x05` | `WAKE_INTERVAL_SEC` | R/W | 4 B, little-endian `uint32_t` | Seconds until the *next* wake. You own this value — see §3.3. |
@@ -376,7 +376,7 @@ struct LoRaWANSession {
     uint32_t fcntUp;
 };
 
-constexpr uint8_t LORAWAN_SESSION_SIZE = 40; // 4 + 16 + 16 + 4
+constexpr uint16_t LORAWAN_SESSION_SIZE = 40; // 4 + 16 + 16 + 4
 
 // ---- Vault I2C helpers ----
 
@@ -395,17 +395,38 @@ void vaultWriteReg(uint8_t reg, uint8_t value) {
     Wire.endTransmission();
 }
 
-void vaultReadContext(uint8_t *out, uint8_t len) {
+// CONTEXT_LENGTH (and only CONTEXT_LENGTH, among the 1-byte-ish
+// registers) is 2 bytes, little-endian -- VAULT_CONTEXT_SIZE (320) is
+// too large for a single byte to represent.
+uint16_t vaultReadReg16(uint8_t reg) {
+    Wire.beginTransmission(VAULT_I2C_ADDR);
+    Wire.write(reg);
+    Wire.endTransmission(false);
+    Wire.requestFrom(VAULT_I2C_ADDR, (uint8_t)2);
+    uint16_t lo = Wire.available() ? Wire.read() : 0;
+    uint16_t hi = Wire.available() ? Wire.read() : 0;
+    return lo | (hi << 8);
+}
+
+void vaultWriteReg16(uint8_t reg, uint16_t value) {
+    Wire.beginTransmission(VAULT_I2C_ADDR);
+    Wire.write(reg);
+    Wire.write((uint8_t)(value & 0xFF));
+    Wire.write((uint8_t)((value >> 8) & 0xFF));
+    Wire.endTransmission();
+}
+
+void vaultReadContext(uint8_t *out, uint16_t len) {
     Wire.beginTransmission(VAULT_I2C_ADDR);
     Wire.write(VAULT_REG_CONTEXT_DATA);
     Wire.endTransmission(false);
     Wire.requestFrom(VAULT_I2C_ADDR, len);
-    for (uint8_t i = 0; i < len && Wire.available(); i++) {
+    for (uint16_t i = 0; i < len && Wire.available(); i++) {
         out[i] = Wire.read();
     }
 }
 
-void vaultWriteContext(const uint8_t *data, uint8_t len) {
+void vaultWriteContext(const uint8_t *data, uint16_t len) {
     Wire.beginTransmission(VAULT_I2C_ADDR);
     Wire.write(VAULT_REG_CONTEXT_DATA);
     Wire.write(data, len);
@@ -461,7 +482,7 @@ void setup() {
     if (status & VAULT_STATUS_CONTEXT_VALID_BIT) {
         // Normal wake: restore the session the Vault already had.
         uint8_t raw[LORAWAN_SESSION_SIZE];
-        uint8_t len = vaultReadReg(VAULT_REG_CONTEXT_LENGTH);
+        uint16_t len = vaultReadReg16(VAULT_REG_CONTEXT_LENGTH);
         vaultReadContext(raw, len);
         unpackSession(raw, session);
         lorawanRestoreSession(session);
@@ -477,7 +498,7 @@ void setup() {
 
     uint8_t raw[LORAWAN_SESSION_SIZE];
     packSession(session, raw);
-    vaultWriteReg(VAULT_REG_CONTEXT_LENGTH, LORAWAN_SESSION_SIZE);
+    vaultWriteReg16(VAULT_REG_CONTEXT_LENGTH, LORAWAN_SESSION_SIZE);
     vaultWriteContext(raw, LORAWAN_SESSION_SIZE);
 
     vaultWriteWakeIntervalSec(300); // report again in 5 minutes

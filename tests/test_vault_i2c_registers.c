@@ -31,19 +31,59 @@ static void test_protocol_version(void) {
     TEST_ASSERT_EQ_INT(VAULT_PROTOCOL_VERSION, version);
 }
 
-static void test_context_length_roundtrip_and_clamp(void) {
+static void test_context_length_roundtrip_little_endian(void) {
     vault_test_reset_all();
-    uint8_t write_bytes[] = { VAULT_REG_CONTEXT_LENGTH, 3 };
+    uint16_t value = 5u; /* within VAULT_CONTEXT_SIZE (8 in host tests) -- no clamping */
+    uint8_t write_bytes[] = {
+        VAULT_REG_CONTEXT_LENGTH,
+        (uint8_t)(value & 0xFFu),
+        (uint8_t)((value >> 8) & 0xFFu)
+    };
     simulate_write_transaction(write_bytes, sizeof(write_bytes));
 
-    uint8_t readback;
-    simulate_read(VAULT_REG_CONTEXT_LENGTH, &readback, 1);
-    TEST_ASSERT_EQ_INT(3, readback);
+    uint8_t readback[2];
+    simulate_read(VAULT_REG_CONTEXT_LENGTH, readback, 2);
+    TEST_ASSERT_EQ_INT(write_bytes[1], readback[0]);
+    TEST_ASSERT_EQ_INT(write_bytes[2], readback[1]);
+}
 
-    uint8_t oversized[] = { VAULT_REG_CONTEXT_LENGTH, 200 };
-    simulate_write_transaction(oversized, sizeof(oversized));
-    simulate_read(VAULT_REG_CONTEXT_LENGTH, &readback, 1);
-    TEST_ASSERT_EQ_INT(VAULT_CONTEXT_SIZE, readback);
+static void test_context_length_above_255_is_representable_and_clamped(void) {
+    /* This is the whole point of widening CONTEXT_LENGTH from 1 byte to
+       2: a value above 255 -- impossible to encode in the old 1-byte
+       field, even though VAULT_CONTEXT_SIZE can now exceed 255 (320 on
+       real hardware targets) -- must be representable on the wire, and
+       still correctly clamp to VAULT_CONTEXT_SIZE if it exceeds the
+       buffer. */
+    vault_test_reset_all();
+    uint16_t value = 300u; /* > 255, and > VAULT_CONTEXT_SIZE (8 in host tests) */
+    uint8_t write_bytes[] = {
+        VAULT_REG_CONTEXT_LENGTH,
+        (uint8_t)(value & 0xFFu),
+        (uint8_t)((value >> 8) & 0xFFu)
+    };
+    simulate_write_transaction(write_bytes, sizeof(write_bytes));
+
+    uint8_t readback[2];
+    simulate_read(VAULT_REG_CONTEXT_LENGTH, readback, 2);
+    uint16_t got = (uint16_t)readback[0] | ((uint16_t)readback[1] << 8);
+    TEST_ASSERT_EQ_INT(VAULT_CONTEXT_SIZE, got);
+}
+
+static void test_context_length_partial_write_does_not_commit(void) {
+    /* Same atomic-commit guarantee as WAKE_INTERVAL_SEC: a transaction
+       that writes only the low byte and stops must not corrupt the
+       previously-committed value. */
+    vault_test_reset_all();
+    uint8_t full[] = { VAULT_REG_CONTEXT_LENGTH, 3, 0 };
+    simulate_write_transaction(full, sizeof(full));
+
+    uint8_t partial[] = { VAULT_REG_CONTEXT_LENGTH, 0xAA };
+    simulate_write_transaction(partial, sizeof(partial));
+
+    uint8_t readback[2];
+    simulate_read(VAULT_REG_CONTEXT_LENGTH, readback, 2);
+    TEST_ASSERT_EQ_INT(3, readback[0]);
+    TEST_ASSERT_EQ_INT(0, readback[1]);
 }
 
 static void test_context_data_roundtrip_and_valid_flag(void) {
@@ -156,7 +196,9 @@ static void test_wake_interval_partial_write_does_not_commit(void) {
 int main(void) {
     RUN_TEST(test_status_starts_invalid);
     RUN_TEST(test_protocol_version);
-    RUN_TEST(test_context_length_roundtrip_and_clamp);
+    RUN_TEST(test_context_length_roundtrip_little_endian);
+    RUN_TEST(test_context_length_above_255_is_representable_and_clamped);
+    RUN_TEST(test_context_length_partial_write_does_not_commit);
     RUN_TEST(test_context_data_roundtrip_and_valid_flag);
     RUN_TEST(test_context_data_write_without_stop_does_not_set_valid);
     RUN_TEST(test_context_data_write_beyond_size_is_clamped);

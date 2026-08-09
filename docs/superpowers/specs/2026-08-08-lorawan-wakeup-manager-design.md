@@ -115,7 +115,12 @@ main MCU's LoRaWAN stack or protocol version changes.
   bytes are actually meaningful, since the real LoRaWAN context size
   differs between protocol versions (see the MCU Analysis Report's
   correction: 40 bytes for 1.0.x, 80 for 1.1) and is smaller than the
-  buffer's compile-time maximum.
+  buffer's compile-time maximum. This register is 2 bytes (u16 LE), not
+  1: `VAULT_CONTEXT_SIZE` can exceed 255 (320 on both current targets),
+  and a 1-byte length field could never represent that as valid —
+  discovered only after sizing the buffer to a real library's
+  requirement (RadioLib's 316-byte persisted state) instead of a
+  smaller placeholder that happened to stay under 255 by coincidence.
 - **Retention verification (LPC810, do once hardware is available):**
   confirm that waking from Power-down mode resumes execution in place
   rather than re-running the reset/startup sequence. If it does reset,
@@ -140,7 +145,7 @@ Cortex-M — no conversion needed).
 |---|---|---|---|---|
 | `0x00` | `STATUS` | R | 1 B | bit0 `CONTEXT_VALID` (0 until a context has been stored at least once), bits 1-7 reserved, always read as 0 in this POC (bit1 is earmarked for a future non-timer wake reason once event-triggered wake exists — see section 8) |
 | `0x01` | `PROTOCOL_VERSION` | R | 1 B | Register-map version. Lets the main MCU confirm compatibility before trusting the layout above. Starts at `0x01`. |
-| `0x02` | `CONTEXT_LENGTH` | R/W | 1 B | Number of meaningful bytes in `CONTEXT_DATA` (≤ `VAULT_CONTEXT_SIZE`). Main MCU sets this when writing back an updated context. |
+| `0x02` | `CONTEXT_LENGTH` | R/W | 2 B (u16 LE) | Number of meaningful bytes in `CONTEXT_DATA` (≤ `VAULT_CONTEXT_SIZE`). Main MCU sets this when writing back an updated context. Widened from 1 byte: `VAULT_CONTEXT_SIZE` (320) exceeds what a 1-byte field can represent. |
 | `0x03` | `CONTEXT_DATA` | R/W | up to `VAULT_CONTEXT_SIZE` | The opaque retained blob. |
 | `0x04` | `COMMAND` | W | 1 B | `0x01` = `CMD_DONE`: main MCU has finished; vault isolates the bus and sleeps after the I2C STOP condition. Other values reserved/ignored. |
 | `0x05` | `WAKE_INTERVAL_SEC` | R/W | 4 B (u32 LE) | Seconds until the next wake. Vault arms the RTC/wakeup timer with this value on sleep entry. Readable for confirmation/debugging. |
@@ -153,8 +158,8 @@ Rules:
   field only (e.g. offset 0, 1, 2... of `CONTEXT_DATA`), never into the
   next register number. Reaching a different register requires a new
   transaction with a new pointer byte. This is what keeps `COMMAND` and
-  `WAKE_INTERVAL_SEC` at the same addresses on both the 64-byte LPC810
-  build and the 128-byte STM32U031F8P6 build.
+  `WAKE_INTERVAL_SEC` at the same addresses across builds regardless of
+  that build's `VAULT_CONTEXT_SIZE`.
 - Reads/writes past `CONTEXT_LENGTH` or `VAULT_CONTEXT_SIZE` are clamped,
   never treated as an error — a malformed or buggy master must not be able
   to hang or corrupt the vault. The same applies to any field: bytes

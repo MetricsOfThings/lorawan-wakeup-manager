@@ -11,7 +11,8 @@ typedef enum {
 } vault_reg_t;
 
 static uint8_t  s_context[VAULT_CONTEXT_SIZE];
-static uint8_t  s_context_length;
+static uint16_t s_context_length;
+static uint16_t s_context_length_staging;
 static bool     s_context_valid;
 static uint32_t s_wake_interval_sec;
 static uint32_t s_wake_interval_staging;
@@ -65,8 +66,21 @@ void vault_i2c_registers_on_write_byte(uint8_t byte) {
 
     switch (s_active_reg) {
     case REG_CONTEXT_LENGTH:
-        if (s_field_offset == 0) {
-            s_context_length = (byte > VAULT_CONTEXT_SIZE) ? (uint8_t)VAULT_CONTEXT_SIZE : byte;
+        /* 2 bytes, little-endian, same atomic-commit pattern as
+           REG_WAKE_INTERVAL_SEC: a transaction that writes only the low
+           byte and stops (or dies) leaves the previously-committed
+           16-bit value untouched, rather than corrupting it with a
+           torn update. uint16_t (not uint8_t) is required here: with
+           VAULT_CONTEXT_SIZE now 320, a 1-byte length field could never
+           represent more than 255 of those bytes as valid. */
+        if (s_field_offset < 2) {
+            s_context_length_staging &= ~(0xFFu << (8u * s_field_offset));
+            s_context_length_staging |= ((uint16_t)byte) << (8u * s_field_offset);
+            if (s_field_offset == 1) {
+                s_context_length = (s_context_length_staging > VAULT_CONTEXT_SIZE)
+                                        ? (uint16_t)VAULT_CONTEXT_SIZE
+                                        : s_context_length_staging;
+            }
         }
         break;
     case REG_CONTEXT_DATA:
@@ -116,8 +130,8 @@ uint8_t vault_i2c_registers_on_read_request(void) {
         }
         break;
     case REG_CONTEXT_LENGTH:
-        if (s_field_offset == 0) {
-            value = s_context_length;
+        if (s_field_offset < 2) {
+            value = (uint8_t)(s_context_length >> (8u * s_field_offset));
         }
         break;
     case REG_CONTEXT_DATA:
@@ -183,6 +197,7 @@ void vault_test_reset_all(void) {
         s_context[i] = 0;
     }
     s_context_length = 0;
+    s_context_length_staging = 0;
     s_context_valid = false;
     s_wake_interval_sec = 0;
     s_wake_interval_staging = 0;
