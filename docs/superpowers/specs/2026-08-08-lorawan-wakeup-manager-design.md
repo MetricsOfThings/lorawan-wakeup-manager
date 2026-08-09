@@ -107,10 +107,10 @@ main MCU's LoRaWAN stack or protocol version changes.
   — the linker-enforced absolute ceiling on this part is 746 bytes, but that
   leaves no real safety margin against stack growth, so this uses a real
   library's requirement instead of the theoretical max.
-- **STM32U031F8P6 default: 128 bytes.** Covers the LoRaWAN 1.1 minimum
-  (80 bytes) plus headroom for ADR/channel-mask state, with plenty of
-  margin against its 12 KB SRAM — no comparable size pressure to the
-  LPC810.
+- **STM32U031F8P6 default: 320 bytes.** Matches the LPC810 default above
+  for consistency — the same RadioLib session data should fit on either
+  Vault variant. Trivial against its 12 KB SRAM (1496 of 12288 bytes used,
+  confirmed by build) — no comparable size pressure to the LPC810.
 - `CONTEXT_LENGTH` (register 0x02, see below) tracks how many of those
   bytes are actually meaningful, since the real LoRaWAN context size
   differs between protocol versions (see the MCU Analysis Report's

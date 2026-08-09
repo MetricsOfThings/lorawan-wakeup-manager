@@ -25,7 +25,11 @@ if(NOT DEFINED VAULT_CONTEXT_SIZE)
         # library's requirement instead of the theoretical max.
         set(VAULT_CONTEXT_SIZE 320)
     elseif(VAULT_TARGET STREQUAL "stm32u031")
-        set(VAULT_CONTEXT_SIZE 128)
+        # Matches the LPC810 default above for consistency: the same
+        # RadioLib session data should fit on either Vault variant.
+        # Trivial against this part's 12 KB SRAM (1496 of 12288 bytes
+        # used at this size, confirmed by build).
+        set(VAULT_CONTEXT_SIZE 320)
     else()
         set(VAULT_CONTEXT_SIZE 8)
     endif()
