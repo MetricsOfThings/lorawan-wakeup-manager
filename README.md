@@ -51,6 +51,21 @@ This target compiles and links against the vendored STM32Cube HAL but has
 not been flashed or validated on real silicon yet — see the design spec's
 "out of scope" section.
 
+## Debug logging
+
+Add `-DVAULT_LOG_ENABLED=ON` to any target's `cmake` configure step to
+enable application-level logging from `core/vault_core.c` (wake/sleep
+transitions, context-valid state, the wake interval in use). Off by
+default.
+
+- **LPC810:** logging requires giving up the dedicated `RESET` pin —
+  see the comment in `platform/lpc810/src/platform_lpc810_uart.c` for
+  why. Output is on `PIO0_5`, 9600 8N1, TX-only.
+- **STM32U031F8P6:** no trade-off needed (this part has pins to spare).
+  Output is on `PA2` (USART2), 9600 8N1, TX-only.
+- **Host:** logs to stderr, useful when debugging `vault_core` logic
+  locally alongside the unit tests.
+
 ## Adding a new STM32 family backend later
 
 1. `git submodule add https://github.com/STMicroelectronics/STM32Cube<Family>.git vendor/STM32Cube<Family>`
