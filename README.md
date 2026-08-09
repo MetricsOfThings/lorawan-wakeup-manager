@@ -60,9 +60,9 @@ default.
 
 - **LPC810:** logging requires giving up the dedicated `RESET` pin —
   see the comment in `platform/lpc810/src/platform_lpc810_uart.c` for
-  why. Output is on `PIO0_5`, 9600 8N1, TX-only.
+  why. Output is on `PIO0_5`, 57600 8N1, TX-only.
 - **STM32U031F8P6:** no trade-off needed (this part has pins to spare).
-  Output is on `PA2` (USART2), 9600 8N1, TX-only.
+  Output is on `PA2` (USART2), 57600 8N1, TX-only.
 - **Host:** logs to stderr, useful when debugging `vault_core` logic
   locally alongside the unit tests.
 

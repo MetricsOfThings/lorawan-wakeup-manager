@@ -26,7 +26,7 @@ void stm32u031_uart_init(void) {
     HAL_GPIO_Init(GPIOA, &gpio_init);
 
     s_uart_handle.Instance = USART2;
-    s_uart_handle.Init.BaudRate = 9600;
+    s_uart_handle.Init.BaudRate = 57600;
     s_uart_handle.Init.WordLength = UART_WORDLENGTH_8B;
     s_uart_handle.Init.StopBits = UART_STOPBITS_1;
     s_uart_handle.Init.Parity = UART_PARITY_NONE;

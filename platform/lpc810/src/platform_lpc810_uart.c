@@ -27,11 +27,15 @@
    decision to keep pins free -- see the design spec). Verify the
    actual main clock frequency against UM10601 / a frequency counter
    before trusting this baud rate on real hardware; recompute
-   UART_BRGVAL below if it's ever wrong. 9600 baud was chosen (over a
-   faster rate like 115200) specifically because it divides much more
-   cleanly from a nominal 12 MHz clock, minimizing baud error. */
-#define UART_BAUD   9600u
-#define UART_BRGVAL 77u /* (12000000 / (16 * 9600)) - 1 */
+   UART_BRGVAL below if it's ever wrong.
+
+   57600 was chosen over 115200 because it divides far more cleanly
+   from a nominal 12 MHz clock: BRGVAL=12 gives an actual rate of
+   57692 baud (0.16% error) versus 115200's best case of ~7% error at
+   this clock, which is above the usual ~2-3% margin considered safe
+   for reliable UART framing. */
+#define UART_BAUD   57600u
+#define UART_BRGVAL 12u /* (12000000 / (16 * 57600)) - 1, rounded; actual rate 57692 baud, 0.16% error */
 
 void lpc810_uart_init(void) {
     /* Release PIO0_5 from its fixed RESET function so it can carry a
