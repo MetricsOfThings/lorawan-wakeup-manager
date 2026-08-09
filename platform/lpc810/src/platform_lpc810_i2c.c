@@ -8,11 +8,20 @@
    header, I2C_SDA and I2C_SCL are movable functions (PINASSIGN7 bits
    [31:24] and PINASSIGN8 bits [7:0] respectively), not fixed-function
    pins on this part -- confirmed by the SWM_PINASSIGN7_I2C_SDA_IO_MASK /
-   SWM_PINASSIGN8_I2C_SCL_IO_MASK field names in LPC8xx.h. Still verify
-   the pin routing (PIO0_10/PIO0_11) against the UM10601 "Switch Matrix"
-   chapter and the board schematic before flashing. */
-#define I2C_SDA_PIN 10u /* PIO0_10 -- verify against schematic */
-#define I2C_SCL_PIN 11u /* PIO0_11 -- verify against schematic */
+   SWM_PINASSIGN8_I2C_SCL_IO_MASK field names in LPC8xx.h.
+
+   PIO0_10/PIO0_11 (the original choice here) do not exist on the
+   LPC810's 8-pin package -- confirmed against the actual pin table,
+   which only brings out PIO0_0-PIO0_5. PIO0_1 and PIO0_4 are the only
+   pins left free once MAIN_RAIL_EN_PIN, SWD, and RESET are accounted
+   for (see platform_lpc810_gpio.c for the full pin budget). PIO0_1 is
+   also the ISP-entry pin sampled by the boot ROM on every reset -- a
+   known, accepted trade-off of this package's limited pin count, not an
+   oversight; still verify the switch matrix routing against the
+   UM10601 "Switch Matrix" chapter and the board schematic before
+   flashing. */
+#define I2C_SDA_PIN 1u /* PIO0_1 -- also the ISP-entry pin, see above */
+#define I2C_SCL_PIN 4u /* PIO0_4 */
 
 /* NXP SWM convention: a movable-function PINASSIGN byte field of 0xFF
    means "not assigned to any pin" -- verify this against UM10601 before

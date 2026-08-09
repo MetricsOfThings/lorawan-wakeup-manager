@@ -34,9 +34,11 @@ from reset exactly as if a battery had just been inserted.
 
 | Signal | Vault side (reference implementation pin) | Notes |
 |---|---|---|
-| I2C SDA | LPC810: `PIO0_10` · STM32U031F8P6: `PA10` | See §2.1 on pull-ups |
-| I2C SCL | LPC810: `PIO0_11` · STM32U031F8P6: `PA9` | See §2.1 on pull-ups |
+| I2C SDA | LPC810: `PIO0_1` · STM32U031F8P6: `PA10` | See §2.1 on pull-ups. On LPC810 this pin doubles as the chip's own ISP-entry pin — see the note below the table |
+| I2C SCL | LPC810: `PIO0_4` · STM32U031F8P6: `PA9` | See §2.1 on pull-ups |
 | Your MCU's power rail, switched | Driven by LPC810 `PIO0_0` · STM32U031F8P6 `PA0` | High = your rail powered on |
+
+**Why LPC810 uses `PIO0_1`/`PIO0_4` and not a nicer pair:** the LPC810 ships only in an 8-pin package, which brings out just `PIO0_0` through `PIO0_5` — six pins total, of which `PIO0_0` (rail enable), `PIO0_2`/`PIO0_3` (SWD), and `PIO0_5` (reset) are already committed, leaving exactly two free. `PIO0_1` is also the LPC810's own ISP-entry pin, sampled by its boot ROM on every reset; since this design intentionally puts I2C pull-ups on your MCU's switched rail rather than the Vault's own rail (§2.1), that line is unpowered during the Vault's own power-up, before your rail has ever been turned on. This is a known, accepted trade-off of the 8-pin package, not an oversight — worth being aware of if you're debugging a Vault that unexpectedly boots into ISP mode instead of running.
 
 The Vault's I2C slave address is **`0x42`** (7-bit).
 
