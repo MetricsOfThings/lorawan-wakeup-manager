@@ -13,6 +13,7 @@ add_executable(vault_lpc810
     src/startup_lpc810.c
     src/main.c
     src/platform_lpc810_gpio.c
+    src/platform_lpc810_timer.c
 )
 
 target_include_directories(vault_lpc810 PRIVATE

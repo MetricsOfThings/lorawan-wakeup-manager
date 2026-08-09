@@ -25,12 +25,29 @@ void (* const g_pfnVectors[])(void) = {
     0, 0, /* reserved */
     PendSV_Handler,
     SysTick_Handler,
-    /* IRQ0-31 -- only the two this project uses are named; the rest
-       fall through to Default_Handler via the weak aliases above once
-       CMSIS's actual IRQn_Type enum order is confirmed in Task 8/9
-       against LPC8xx.h (the position of WKT_IRQn and I2C0_IRQn in that
-       enum must match their position in this table -- verify before
-       relying on either interrupt firing). */
+    /* IRQ0-31, per LPC8xx.h's IRQn_Type enum (confirmed in Task 8 against
+       the vendored header). Only WKT_IRQn (=15) is wired up so far;
+       I2C0_IRQn (=8) is filled in here too since its position is already
+       known, but Task 9 owns actually implementing/verifying it -- for
+       now it points at Default_Handler like the rest of the unused slots.
+       Extend this array further (do not shrink or renumber it) for any
+       IRQn beyond 15 that a later task needs. */
+    0,                  /* IRQ0:  SPI0_IRQn */
+    0,                  /* IRQ1:  SPI1_IRQn */
+    0,                  /* IRQ2:  Reserved18_IRQn */
+    0,                  /* IRQ3:  USART0_IRQn */
+    0,                  /* IRQ4:  USART1_IRQn */
+    0,                  /* IRQ5:  USART2_IRQn */
+    0,                  /* IRQ6:  Reserved22_IRQn */
+    0,                  /* IRQ7:  Reserved23_IRQn */
+    I2C0_IRQHandler,    /* IRQ8:  I2C0_IRQn (Task 9 implements) */
+    0,                  /* IRQ9:  SCT0_IRQn */
+    0,                  /* IRQ10: MRT0_IRQn */
+    0,                  /* IRQ11: CMP_IRQn */
+    0,                  /* IRQ12: WDT_IRQn */
+    0,                  /* IRQ13: BOD_IRQn */
+    0,                  /* IRQ14: Reserved30_IRQn */
+    WKT_IRQHandler,     /* IRQ15: WKT_IRQn */
 };
 
 void Reset_Handler(void) {
