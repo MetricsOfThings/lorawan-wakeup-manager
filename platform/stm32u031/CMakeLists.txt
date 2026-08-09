@@ -22,6 +22,7 @@ add_executable(vault_stm32u031
     ${STM32CUBE_U0_ROOT}/Drivers/CMSIS/Device/ST/STM32U0xx/Source/Templates/gcc/startup_stm32u031xx.s
     ${STM32CUBE_U0_ROOT}/Drivers/CMSIS/Device/ST/STM32U0xx/Source/Templates/system_stm32u0xx.c
     src/main.c
+    src/libc_stubs.c
 )
 
 target_include_directories(vault_stm32u031 PRIVATE
