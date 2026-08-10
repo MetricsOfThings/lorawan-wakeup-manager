@@ -15,6 +15,23 @@ void lpc810_timer_init(void) {
        -- verify before flashing. */
     SYSCON->SYSAHBCLKCTRL |= SYSCON_SYSAHBCLKCTRL_WKT_MASK;
 
+    /* The low-power oscillator that CLKSEL=1 below selects has its own
+       enable bit in the PMU block, entirely separate from both WKT's own
+       peripheral clock gate (SYSAHBCLKCTRL above) and the CLKSEL mux
+       itself -- selecting it as WKT's clock source doesn't turn it on.
+       Left unset (as it was before this fix), WKT free-runs off
+       whatever unstable/unenabled state that oscillator defaults to
+       rather than a clean ~10 kHz source, which is consistent with a
+       wake interval that completes (so *something* is decrementing
+       COUNT) but at a duration that doesn't match WKT_CLOCK_HZ's 10 kHz
+       assumption in either direction. LPOSCDPDEN (bit 3, left unset
+       here) would additionally be needed if this design ever moves to
+       Deep power-down mode -- this design intentionally stays in
+       Power-down (see platform_lpc810_power.c) to keep SRAM retained,
+       so it isn't needed yet. Verify both DPDCTRL bit positions against
+       UM10601's "Deep power-down control register" before flashing. */
+    PMU->DPDCTRL |= PMU_DPDCTRL_LPOSCEN_MASK;
+
     /* CTRL.CLKSEL selects the WKT's clock source: 0 = divided IRC clock,
        1 = internal ~10 kHz low-power oscillator -- this was previously
        written as 0, the opposite of the intended low-power oscillator,
