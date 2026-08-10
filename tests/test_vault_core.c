@@ -29,10 +29,15 @@ static void test_first_cycle_calls_in_order(void) {
     TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(0)->call);
     TEST_ASSERT_EQ_INT(1, host_mock_call_at(0)->arg);
     TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_INIT, host_mock_call_at(1)->call);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_DEINIT, host_mock_call_at(2)->call);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_BUS_ISOLATE, host_mock_call_at(3)->call);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(4)->call);
-    TEST_ASSERT_EQ_INT(0, host_mock_call_at(4)->arg);
+    /* The main rail must be cut BEFORE the I2C peripheral is torn down
+       and the bus pins are reconfigured -- otherwise the master MCU is
+       still powered and listening while those steps produce real
+       transitions on SDA/SCL, right after it wrote CMD_DONE expecting
+       an immediate, clean power loss. */
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(2)->call);
+    TEST_ASSERT_EQ_INT(0, host_mock_call_at(2)->arg);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_DEINIT, host_mock_call_at(3)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_BUS_ISOLATE, host_mock_call_at(4)->call);
     TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_WAKEUP_TIMER_ARM, host_mock_call_at(5)->call);
     TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_ENTER_LOW_POWER_SLEEP, host_mock_call_at(6)->call);
 }

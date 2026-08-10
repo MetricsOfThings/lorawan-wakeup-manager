@@ -28,9 +28,20 @@ void vault_core_step(void) {
     vault_log_u32("vault_core: context_valid=", vault_state_context_valid() ? 1u : 0u);
 
     /* BUS_ISOLATION */
+    /* Cut your MCU's power FIRST, before touching the I2C peripheral or
+       its pins. Disabling the slave (platform_i2c_slave_deinit) and
+       un-assigning/reconfiguring SDA/SCL (platform_bus_isolate) can
+       produce real transitions on those lines -- if your MCU's rail
+       were still on at that point, it would still be fully powered and
+       listening when that happens, right after it wrote CMD_DONE
+       expecting the vault to cut its power immediately. Cutting the
+       rail first removes that window entirely: your MCU has no power
+       left by the time the vault does anything to the bus, so it
+       cannot observe or react to whatever those teardown steps do to
+       SDA/SCL. */
+    platform_main_rail_enable(false);
     platform_i2c_slave_deinit();
     platform_bus_isolate();
-    platform_main_rail_enable(false);
     vault_log("vault_core: bus_isolation done\n");
 
     /* ARM_SLEEP */
