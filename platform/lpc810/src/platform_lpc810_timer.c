@@ -24,6 +24,24 @@ void lpc810_timer_init(void) {
     /* Enable the WKT interrupt line in the NVIC so WKT_IRQHandler
        (startup_lpc810.c) actually fires when the counter reaches zero. */
     NVIC_EnableIRQ(WKT_IRQn);
+
+    /* NVIC_EnableIRQ above only makes WKT_IRQHandler run *after* the CPU
+       has already woken up -- it does not, by itself, let WKT wake the
+       CPU out of Deep-sleep/Power-down in the first place. This part's
+       "start logic" (STARTERP0/STARTERP1) is a separate wake-source
+       enable layer sitting in front of the NVIC specifically for these
+       deeper sleep modes; STARTERP1 bit 15 (WKT) is what actually
+       arms WKT as a wake source. Without this, platform_enter_low_power_sleep()
+       (fixed to stop corrupting PDRUNCFG at write time, see that file's
+       history) genuinely reaches WFI and enters Power-down, but the WKT
+       alarm firing never pulls the CPU back out of it -- it can only
+       wake later from some other event (e.g. a debugger reset), which
+       looks identical to "never wakes" from the outside. Verify the
+       STARTERP1 bit position and write semantics (this assumes a plain
+       read-modify-write enable, not write-1-to-set-only) against
+       UM10601's "Start logic edge control register" / "Start logic 0
+       wake-up enable register 1" sections before flashing. */
+    SYSCON->STARTERP1 |= SYSCON_STARTERP1_WKT_MASK;
 }
 
 void platform_wakeup_timer_arm(uint32_t seconds) {
