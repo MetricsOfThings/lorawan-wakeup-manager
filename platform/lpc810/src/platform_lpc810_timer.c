@@ -15,11 +15,18 @@ void lpc810_timer_init(void) {
        -- verify before flashing. */
     SYSCON->SYSAHBCLKCTRL |= SYSCON_SYSAHBCLKCTRL_WKT_MASK;
 
-    /* Select the internal low-power oscillator as the WKT clock source
-       (as opposed to the external 32 kHz crystal input) -- verify the
-       exact CTRL register bit/encoding against UM10601 "WKT Control
-       register" before flashing. */
-    WKT->CTRL = 0u;
+    /* CTRL.CLKSEL selects the WKT's clock source: 0 = divided IRC clock,
+       1 = internal ~10 kHz low-power oscillator -- this was previously
+       written as 0, the opposite of the intended low-power oscillator,
+       which explains a wake interval elapsing roughly 1000x faster than
+       requested (a 60 s WAKE_INTERVAL_SEC firing in ~60 ms): the divided
+       IRC clock driving the countdown is nowhere near the WKT_CLOCK_HZ
+       (10 kHz) the count-value math below assumes, and IRC isn't gated
+       off in PDSLEEPCFG (see platform_lpc810_power.c) so it kept driving
+       WKT straight through Power-down instead of the intended low-power
+       oscillator taking over. Verify the CLKSEL encoding against
+       UM10601's "WKT Control register" before flashing. */
+    WKT->CTRL = WKT_CTRL_CLKSEL_MASK;
 
     /* Enable the WKT interrupt line in the NVIC so WKT_IRQHandler
        (startup_lpc810.c) actually fires when the counter reaches zero. */
