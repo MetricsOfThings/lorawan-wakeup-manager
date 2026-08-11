@@ -32,33 +32,14 @@ static void rtc_init(void);
 
 void platform_init(void) {
     HAL_Init();
+    gpio_init();
+    rtc_init();
 
-    /* UART brought up FIRST, ahead of gpio_init()/rtc_init(), purely for
-       bring-up visibility: rtc_init() below is the most likely place for
-       early boot to stall (LSE crystal wait, RTC init mode entry/
-       synchronization), and with UART initialized after it as before,
-       a stall there produces zero bytes ever -- indistinguishable from
-       "UART doesn't work at all" from the outside. Once this backend has
-       been hardware-verified past bring-up, this can move back after
-       gpio_init()/rtc_init() to match the LPC810 backend's ordering. */
 #ifdef VAULT_LOG_ENABLED
     extern void stm32u031_uart_init(void);
-    extern void stm32u031_uart_raw_transmit(const char *msg);
     stm32u031_uart_init();
-    /* Diagnostic-only: bypasses HAL_UART_Transmit() entirely to isolate
-       whether HAL's own logic or the peripheral/clock itself is behind
-       the truncation under investigation -- see the comment on
-       stm32u031_uart_raw_transmit() in platform_stm32u031_uart.c. Remove
-       once that's resolved. */
-    stm32u031_uart_raw_transmit("RAW: platform_init: uart ready\n");
 #endif
-    vault_log("platform_init: uart ready\n");
-
-    gpio_init();
-    vault_log("platform_init: gpio done\n");
-
-    rtc_init();
-    vault_log("platform_init: rtc done\n");
+    vault_log("platform_init: done\n");
 }
 
 void platform_main_rail_enable(bool on) {
@@ -88,33 +69,32 @@ static void rtc_init(void) {
        it does on other STM32 families before flashing. */
     HAL_PWR_EnableBkUpAccess();
 
-    /* Switched from LSE back to the internal LSI oscillator (~32 kHz,
-       nominal -- verify the exact frequency and tolerance against the
-       STM32U031 reference manual before relying on it for real interval
-       timing) to isolate whether the fitted 32.768 kHz crystal was
-       involved in the boot problem under investigation: UART output was
-       truncating before rtc_init() even ran (uart_init() now runs first
-       in platform_init(), so this isn't LSE-caused), and a real
-       HardFault_Handler added to check for a fault during that first
-       transmission never fired either -- ruling out both the LSE wait
-       and a fault as the cause. LSI avoids the crystal-startup wait
-       entirely (HAL_RCC_OscConfig() for LSI doesn't block on an
-       external oscillator locking), which removes another variable
-       while the actual cause is still being tracked down. LSI's
-       accuracy is much worse than LSE's, so this is a bring-up-only
-       substitution -- revisit switching back to LSE (see git history)
-       once the real cause is found and hardware timekeeping accuracy
-       matters again. */
-    RCC_OscInitTypeDef lsi_osc_init = {0};
-    lsi_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSI;
-    lsi_osc_init.LSIState = RCC_LSI_ON;
-    HAL_RCC_OscConfig(&lsi_osc_init);
+    /* The real board is fitted with a 32.768 kHz crystal, so the RTC
+       clock source is LSE. LSEDRIVE_LOW is the lowest (and lowest-power)
+       drive strength -- appropriate for a 32.768 kHz watch crystal's low
+       required drive level, but verify this against the specific
+       crystal's datasheet (load capacitance, ESR) before flashing; too
+       low a drive setting for a given crystal/PCB combination can cause
+       slow or unreliable startup. HAL_RCC_OscConfig() blocks internally,
+       polling LSERDY up to LSE_STARTUP_TIMEOUT (5000 ms,
+       stm32u0xx_hal_conf.h's default) -- crystal startup is inherently
+       slower than an internal RC oscillator's, so this call taking up
+       to several seconds on the very first boot (when the backup domain
+       hasn't already latched LSE on from a previous cycle) is expected,
+       not a hang. (Bring-up note: this was briefly swapped to LSI while
+       chasing an unrelated bug -- a missing SysTick_Handler that hung
+       the CPU ~1ms after boot, nothing to do with the RTC clock source
+       -- see git history; LSE was never actually the problem.) */
+    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
+    RCC_OscInitTypeDef lse_osc_init = {0};
+    lse_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+    lse_osc_init.LSEState = RCC_LSE_ON;
+    HAL_RCC_OscConfig(&lse_osc_init);
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
-    vault_log("rtc_init: RTC clock source selected\n");
 
     __HAL_RCC_RTC_ENABLE();
     s_rtc_handle.Instance = RTC;
@@ -130,8 +110,7 @@ static void rtc_init(void) {
     s_rtc_handle.Init.AsynchPrediv = 127;
     s_rtc_handle.Init.SynchPrediv = 255;
     s_rtc_handle.Init.OutPut = RTC_OUTPUT_DISABLE;
-    HAL_StatusTypeDef rtc_init_status = HAL_RTC_Init(&s_rtc_handle);
-    vault_log_u32("rtc_init: HAL_RTC_Init status=", (uint32_t)rtc_init_status);
+    HAL_RTC_Init(&s_rtc_handle);
 
     /* Enable the RTC/TAMP combined NVIC line so RTC_TAMP_IRQHandler
        (below) actually fires when the wakeup timer elapses -- mirrors
