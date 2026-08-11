@@ -17,6 +17,52 @@ void SystemClock_Config(void);
 static I2C_HandleTypeDef s_i2c_handle;
 static RTC_HandleTypeDef s_rtc_handle;
 
+/* Bring-up diagnostic: startup_stm32u031xx.s only weak-aliases
+   HardFault_Handler to Default_Handler's silent infinite loop, so a
+   fault currently produces zero visibility -- indistinguishable from
+   any other hang from the outside, which is exactly the ambiguity that
+   motivated this handler. Cortex-M0+ (same core as the LPC810 backend)
+   has a single combined HardFault for all fault classes -- no separate
+   BusFault/UsageFault/MemManage vectors exist on this core the way they
+   do on larger Cortex-M parts -- so this one handler covers every fault
+   condition. Decodes the 8-word exception stack frame hardware pushes
+   automatically on fault entry (r0,r1,r2,r3,r12,lr,pc,xpsr) to recover
+   the faulting PC, the same manual technique used earlier in this
+   project's LPC810 bring-up via live SWD register readback, but built
+   into firmware here so it prints over UART instead of requiring a
+   debugger session. LR bit 2 (EXC_RETURN bit) distinguishes whether the
+   hardware-pushed frame is on MSP or PSP; this firmware never switches
+   to PSP, so MSP should always be the case in practice, but both paths
+   are handled since the standard textbook pattern costs nothing extra. */
+void HardFault_Handler(void) __attribute__((naked));
+
+__attribute__((used)) void hard_fault_handler_c(uint32_t *stack_frame) {
+    vault_log("HARDFAULT\n");
+    vault_log_u32("HardFault: PC=", stack_frame[6]);
+    vault_log_u32("HardFault: LR=", stack_frame[5]);
+    vault_log_u32("HardFault: xPSR=", stack_frame[7]);
+    while (1) {
+        /* Halt here rather than falling through to Default_Handler's
+           loop, so the diagnostic above is the last thing ever printed. */
+    }
+}
+
+void HardFault_Handler(void) {
+    __asm volatile (
+        "movs r0, #4\n"
+        "mov r1, lr\n"
+        "tst r0, r1\n"
+        "beq 1f\n"
+        "mrs r0, psp\n"
+        "b 2f\n"
+        "1:\n"
+        "mrs r0, msp\n"
+        "2:\n"
+        "ldr r1, =hard_fault_handler_c\n"
+        "bx r1\n"
+    );
+}
+
 static void gpio_init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
