@@ -146,6 +146,26 @@ static void rtc_init(void) {
     HAL_NVIC_EnableIRQ(RTC_TAMP_IRQn);
 }
 
+/* startup_stm32u031xx.s only weak-aliases SysTick_Handler to
+   Default_Handler's silent infinite loop. HAL_Init() (platform_init()
+   above) configures SysTick to fire every 1 ms via HAL_InitTick(), so
+   without a real handler here, the first SysTick interrupt -- roughly
+   1 ms after boot -- permanently hangs the CPU in that infinite loop.
+   This was the actual root cause of firmware appearing to transmit only
+   a handful of UART bytes before going silent: USART2's shift
+   register/FIFO is a separate hardware block that kept draining
+   whatever bytes were already queued at the moment the CPU hung, while
+   the CPU itself never executed another instruction -- explaining why
+   the cutoff was a fixed ~1 ms of transmission time (content-
+   independent) rather than a fault or reset (RCC->CSR never showed a
+   new reset cause because there wasn't one). This is the STM32
+   convention CubeMX normally auto-generates into stm32u0xx_it.c; this
+   firmware was hand-written without that file. HAL_IncTick() is what
+   HAL_GetTick()/HAL_Delay() and all HAL timeout logic depend on. */
+void SysTick_Handler(void) {
+    HAL_IncTick();
+}
+
 void RTC_TAMP_IRQHandler(void) {
     /* HAL_RTCEx_WakeUpTimerIRQHandler() clears WUTF internally and then
        invokes HAL_RTCEx_WakeUpTimerEventCallback(), which
