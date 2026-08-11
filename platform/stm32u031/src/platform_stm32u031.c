@@ -69,29 +69,26 @@ static void rtc_init(void) {
        it does on other STM32 families before flashing. */
     HAL_PWR_EnableBkUpAccess();
 
-    /* Back on LSE, this time at RCC_LSEDRIVE_HIGH instead of the
-       previous RCC_LSEDRIVE_LOW. LOW was chosen purely for its lower
-       power draw without knowing this specific crystal's actual
-       required drive level/ESR -- if this crystal needs more drive
-       current than LOW provides to start reliably, that alone would
-       explain the intermittent LSE failures under investigation (see
-       git history: this rtc_init() was bounced LSE -> LSI -> LSE -> LSI
-       chasing this). HIGH trades power for the best chance of reliable
-       startup; once LSE is confirmed reliably starting at HIGH, step
-       the drive level back down (MEDIUMHIGH, then MEDIUMLOW) to find
-       the lowest setting that still starts consistently, rather than
-       leaving it at HIGH permanently -- verify against this crystal's
-       own datasheet (load capacitance, ESR) which drive level it
-       actually needs. */
-    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_HIGH);
-    RCC_OscInitTypeDef lse_osc_init = {0};
-    lse_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSE;
-    lse_osc_init.LSEState = RCC_LSE_ON;
-    HAL_RCC_OscConfig(&lse_osc_init);
+    /* Back on LSI. LSE was retried at both RCC_LSEDRIVE_LOW and
+       RCC_LSEDRIVE_HIGH -- both produced UART output garbled from the
+       very first character, every time, versus clean readable output
+       under LSI every time. Ruling out drive strength as the cause
+       (both levels failed identically) points at LSE itself being
+       non-functional on this specific board -- a real hardware issue
+       (crystal, load caps, or board layout) rather than something
+       fixable from firmware. See git history for the full LSE <-> LSI
+       investigation. Do not retry LSE again without first physically
+       inspecting the crystal circuit (continuity, load caps, solder
+       joints) or confirming oscillation with a scope -- further
+       software-only drive-level tuning already been shown not to help. */
+    RCC_OscInitTypeDef lsi_osc_init = {0};
+    lsi_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+    lsi_osc_init.LSIState = RCC_LSI_ON;
+    HAL_RCC_OscConfig(&lsi_osc_init);
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
 
     __HAL_RCC_RTC_ENABLE();
@@ -161,13 +158,15 @@ void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc) {
 void platform_wakeup_timer_arm(uint32_t seconds) {
     /* RTC_WAKEUPCLOCK_CK_SPRE_16BITS drives the wakeup counter from the
        1 Hz SPRE clock (RTCCLK / (AsynchPrediv+1) / (SynchPrediv+1), see
-       rtc_init() above), so reload value == seconds directly -- correct
-       given rtc_init() currently selects LSE (a real 32.768 kHz
-       crystal, at RCC_LSEDRIVE_HIGH -- see its comment). If rtc_init()
-       ever falls back to LSI again, this assumption only holds
-       approximately, since LSI's frequency is nowhere near as tightly
-       toleranced. Still verify the SPRE-clock derivation itself against
-       the STM32U031 reference manual's RTC chapter before flashing. */
+       rtc_init() above), so reload value == seconds directly -- only
+       exactly true while rtc_init() selects LSE (a real 32.768 kHz
+       crystal). rtc_init() is currently back on LSI (see its comment --
+       LSE was retried and ruled out as a firmware-fixable issue), whose
+       frequency is nowhere near as tightly toleranced, so `seconds`
+       only approximately matches real elapsed time until LSE is
+       confirmed working again. Still verify the SPRE-clock derivation
+       itself against the STM32U031 reference manual's RTC chapter
+       before flashing. */
     HAL_RTCEx_DeactivateWakeUpTimer(&s_rtc_handle);
     HAL_RTCEx_SetWakeUpTimer_IT(&s_rtc_handle, seconds, RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
 }
