@@ -17,52 +17,6 @@ void SystemClock_Config(void);
 static I2C_HandleTypeDef s_i2c_handle;
 static RTC_HandleTypeDef s_rtc_handle;
 
-/* Bring-up diagnostic: startup_stm32u031xx.s only weak-aliases
-   HardFault_Handler to Default_Handler's silent infinite loop, so a
-   fault currently produces zero visibility -- indistinguishable from
-   any other hang from the outside, which is exactly the ambiguity that
-   motivated this handler. Cortex-M0+ (same core as the LPC810 backend)
-   has a single combined HardFault for all fault classes -- no separate
-   BusFault/UsageFault/MemManage vectors exist on this core the way they
-   do on larger Cortex-M parts -- so this one handler covers every fault
-   condition. Decodes the 8-word exception stack frame hardware pushes
-   automatically on fault entry (r0,r1,r2,r3,r12,lr,pc,xpsr) to recover
-   the faulting PC, the same manual technique used earlier in this
-   project's LPC810 bring-up via live SWD register readback, but built
-   into firmware here so it prints over UART instead of requiring a
-   debugger session. LR bit 2 (EXC_RETURN bit) distinguishes whether the
-   hardware-pushed frame is on MSP or PSP; this firmware never switches
-   to PSP, so MSP should always be the case in practice, but both paths
-   are handled since the standard textbook pattern costs nothing extra. */
-void HardFault_Handler(void) __attribute__((naked));
-
-__attribute__((used)) void hard_fault_handler_c(uint32_t *stack_frame) {
-    vault_log("HARDFAULT\n");
-    vault_log_u32("HardFault: PC=", stack_frame[6]);
-    vault_log_u32("HardFault: LR=", stack_frame[5]);
-    vault_log_u32("HardFault: xPSR=", stack_frame[7]);
-    while (1) {
-        /* Halt here rather than falling through to Default_Handler's
-           loop, so the diagnostic above is the last thing ever printed. */
-    }
-}
-
-void HardFault_Handler(void) {
-    __asm volatile (
-        "movs r0, #4\n"
-        "mov r1, lr\n"
-        "tst r0, r1\n"
-        "beq 1f\n"
-        "mrs r0, psp\n"
-        "b 2f\n"
-        "1:\n"
-        "mrs r0, msp\n"
-        "2:\n"
-        "ldr r1, =hard_fault_handler_c\n"
-        "bx r1\n"
-    );
-}
-
 static void gpio_init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
@@ -127,31 +81,31 @@ static void rtc_init(void) {
        it does on other STM32 families before flashing. */
     HAL_PWR_EnableBkUpAccess();
 
-    /* The real board is fitted with a 32.768 kHz crystal, so the RTC
-       clock source is LSE, not the LSI placeholder this used to fall
-       back to for lack of a board to confirm against. LSEDRIVE_LOW is
-       the lowest (and lowest-power) drive strength -- appropriate for a
-       32.768 kHz watch crystal's low required drive level, but verify
-       this against the specific crystal's datasheet (load capacitance,
-       ESR) before flashing; too low a drive setting for a given
-       crystal/PCB combination can cause slow or unreliable startup.
-       HAL_RCC_OscConfig() blocks internally, polling LSERDY up to
-       LSE_STARTUP_TIMEOUT (5000 ms, stm32u0xx_hal_conf.h's default) --
-       crystal startup is inherently slower than an internal RC
-       oscillator's, so this call taking up to several seconds on the
-       very first boot (when the backup domain hasn't already latched
-       LSE on from a previous cycle) is expected, not a hang. */
-    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
-    RCC_OscInitTypeDef lse_osc_init = {0};
-    lse_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSE;
-    lse_osc_init.LSEState = RCC_LSE_ON;
-    vault_log("rtc_init: starting LSE wait\n");
-    HAL_StatusTypeDef lse_status = HAL_RCC_OscConfig(&lse_osc_init);
-    vault_log_u32("rtc_init: LSE osc config status=", (uint32_t)lse_status);
+    /* Switched from LSE back to the internal LSI oscillator (~32 kHz,
+       nominal -- verify the exact frequency and tolerance against the
+       STM32U031 reference manual before relying on it for real interval
+       timing) to isolate whether the fitted 32.768 kHz crystal was
+       involved in the boot problem under investigation: UART output was
+       truncating before rtc_init() even ran (uart_init() now runs first
+       in platform_init(), so this isn't LSE-caused), and a real
+       HardFault_Handler added to check for a fault during that first
+       transmission never fired either -- ruling out both the LSE wait
+       and a fault as the cause. LSI avoids the crystal-startup wait
+       entirely (HAL_RCC_OscConfig() for LSI doesn't block on an
+       external oscillator locking), which removes another variable
+       while the actual cause is still being tracked down. LSI's
+       accuracy is much worse than LSE's, so this is a bring-up-only
+       substitution -- revisit switching back to LSE (see git history)
+       once the real cause is found and hardware timekeeping accuracy
+       matters again. */
+    RCC_OscInitTypeDef lsi_osc_init = {0};
+    lsi_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+    lsi_osc_init.LSIState = RCC_LSI_ON;
+    HAL_RCC_OscConfig(&lsi_osc_init);
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
     vault_log("rtc_init: RTC clock source selected\n");
 
