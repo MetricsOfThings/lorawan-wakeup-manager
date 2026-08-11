@@ -1,5 +1,6 @@
 #include "vault/platform.h"
 #include "vault/vault_i2c_registers.h"
+#include "vault/vault_log.h"
 #include "stm32u0xx_hal.h"
 
 #define MAIN_RAIL_EN_PORT GPIOA
@@ -31,13 +32,26 @@ static void rtc_init(void);
 
 void platform_init(void) {
     HAL_Init();
-    gpio_init();
-    rtc_init();
 
+    /* UART brought up FIRST, ahead of gpio_init()/rtc_init(), purely for
+       bring-up visibility: rtc_init() below is the most likely place for
+       early boot to stall (LSE crystal wait, RTC init mode entry/
+       synchronization), and with UART initialized after it as before,
+       a stall there produces zero bytes ever -- indistinguishable from
+       "UART doesn't work at all" from the outside. Once this backend has
+       been hardware-verified past bring-up, this can move back after
+       gpio_init()/rtc_init() to match the LPC810 backend's ordering. */
 #ifdef VAULT_LOG_ENABLED
     extern void stm32u031_uart_init(void);
     stm32u031_uart_init();
 #endif
+    vault_log("platform_init: uart ready\n");
+
+    gpio_init();
+    vault_log("platform_init: gpio done\n");
+
+    rtc_init();
+    vault_log("platform_init: rtc done\n");
 }
 
 void platform_main_rail_enable(bool on) {
@@ -85,12 +99,15 @@ static void rtc_init(void) {
     RCC_OscInitTypeDef lse_osc_init = {0};
     lse_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSE;
     lse_osc_init.LSEState = RCC_LSE_ON;
-    HAL_RCC_OscConfig(&lse_osc_init);
+    vault_log("rtc_init: starting LSE wait\n");
+    HAL_StatusTypeDef lse_status = HAL_RCC_OscConfig(&lse_osc_init);
+    vault_log_u32("rtc_init: LSE osc config status=", (uint32_t)lse_status);
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
     periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
+    vault_log("rtc_init: RTC clock source selected\n");
 
     __HAL_RCC_RTC_ENABLE();
     s_rtc_handle.Instance = RTC;
@@ -106,7 +123,8 @@ static void rtc_init(void) {
     s_rtc_handle.Init.AsynchPrediv = 127;
     s_rtc_handle.Init.SynchPrediv = 255;
     s_rtc_handle.Init.OutPut = RTC_OUTPUT_DISABLE;
-    HAL_RTC_Init(&s_rtc_handle);
+    HAL_StatusTypeDef rtc_init_status = HAL_RTC_Init(&s_rtc_handle);
+    vault_log_u32("rtc_init: HAL_RTC_Init status=", (uint32_t)rtc_init_status);
 
     /* Enable the RTC/TAMP combined NVIC line so RTC_TAMP_IRQHandler
        (below) actually fires when the wakeup timer elapses -- mirrors
