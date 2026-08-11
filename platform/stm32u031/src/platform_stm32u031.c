@@ -69,31 +69,25 @@ static void rtc_init(void) {
        it does on other STM32 families before flashing. */
     HAL_PWR_EnableBkUpAccess();
 
-    /* The real board is fitted with a 32.768 kHz crystal, so the RTC
-       clock source is LSE. LSEDRIVE_LOW is the lowest (and lowest-power)
-       drive strength -- appropriate for a 32.768 kHz watch crystal's low
-       required drive level, but verify this against the specific
-       crystal's datasheet (load capacitance, ESR) before flashing; too
-       low a drive setting for a given crystal/PCB combination can cause
-       slow or unreliable startup. HAL_RCC_OscConfig() blocks internally,
-       polling LSERDY up to LSE_STARTUP_TIMEOUT (5000 ms,
-       stm32u0xx_hal_conf.h's default) -- crystal startup is inherently
-       slower than an internal RC oscillator's, so this call taking up
-       to several seconds on the very first boot (when the backup domain
-       hasn't already latched LSE on from a previous cycle) is expected,
-       not a hang. (Bring-up note: this was briefly swapped to LSI while
-       chasing an unrelated bug -- a missing SysTick_Handler that hung
-       the CPU ~1ms after boot, nothing to do with the RTC clock source
-       -- see git history; LSE was never actually the problem.) */
-    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
-    RCC_OscInitTypeDef lse_osc_init = {0};
-    lse_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSE;
-    lse_osc_init.LSEState = RCC_LSE_ON;
-    HAL_RCC_OscConfig(&lse_osc_init);
+    /* Back on the internal LSI oscillator (~32 kHz nominal -- verify the
+       exact frequency/tolerance against the STM32U031 reference manual
+       before relying on it for real interval timing) rather than LSE:
+       switching back to LSE after the SysTick_Handler fix reproduced a
+       boot problem again, so LSE may genuinely be marginal on this
+       board (crystal load capacitance/ESR mismatch, a bad solder joint,
+       etc.), not just a red herring from the earlier investigation as
+       previously assumed -- see git history. LSI trades away real
+       timekeeping accuracy for a working boot; revisit LSE once the
+       crystal circuit itself has been checked on hardware (or a scope
+       is available to confirm it's actually oscillating). */
+    RCC_OscInitTypeDef lsi_osc_init = {0};
+    lsi_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+    lsi_osc_init.LSIState = RCC_LSI_ON;
+    HAL_RCC_OscConfig(&lsi_osc_init);
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
 
     __HAL_RCC_RTC_ENABLE();
@@ -163,14 +157,15 @@ void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc) {
 void platform_wakeup_timer_arm(uint32_t seconds) {
     /* RTC_WAKEUPCLOCK_CK_SPRE_16BITS drives the wakeup counter from the
        1 Hz SPRE clock (RTCCLK / (AsynchPrediv+1) / (SynchPrediv+1), see
-       rtc_init() above), so reload value == seconds directly -- this is
-       now correct by construction given the real board's 32.768 kHz LSE
-       crystal (rtc_init() selects LSE and sets the prediv values to
-       divide it down to exactly 1 Hz), rather than the "placeholder,
-       verify once hardware exists" state this was in before LSE was
-       confirmed fitted. Still verify the SPRE-clock derivation itself
-       against the STM32U031 reference manual's RTC chapter before
-       flashing. */
+       rtc_init() above), so reload value == seconds directly -- this
+       assumes RTCCLK is really 32.768 kHz, which is only exactly true
+       while rtc_init() selects LSE (a real crystal). rtc_init() is
+       currently back on LSI for bring-up (see its comment), whose
+       actual frequency is nowhere near as tightly toleranced as LSE's,
+       so `seconds` will only approximately match real elapsed time
+       until LSE is back in use. Still verify the SPRE-clock derivation
+       itself against the STM32U031 reference manual's RTC chapter
+       before flashing. */
     HAL_RTCEx_DeactivateWakeUpTimer(&s_rtc_handle);
     HAL_RTCEx_SetWakeUpTimer_IT(&s_rtc_handle, seconds, RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
 }
