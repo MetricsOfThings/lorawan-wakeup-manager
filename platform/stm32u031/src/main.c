@@ -3,10 +3,11 @@
 #include "stm32u0xx_hal.h"
 
 void SystemClock_Config(void) {
-    /* Placeholder MSI-based configuration -- revisit once real hardware
-       exists to pick the actual clock tree (e.g. whether LSE is fitted
-       for RTC accuracy, matching the STM32U031F8P6's 16-pin budget
-       advantage over the LPC810 called out in the analysis report). */
+    /* Placeholder MSI-based main clock configuration -- revisit the MSI
+       range/budget once real hardware exists to confirm it against the
+       board's actual power/performance needs. This is independent of
+       the RTC's own clock source, which is LSE (the real board's fitted
+       32.768 kHz crystal) -- see rtc_init() in platform_stm32u031.c. */
     RCC_OscInitTypeDef osc_init = {0};
     osc_init.OscillatorType = RCC_OSCILLATORTYPE_MSI;
     osc_init.MSIState = RCC_MSI_ON;

@@ -67,25 +67,42 @@ static void rtc_init(void) {
        it does on other STM32 families before flashing. */
     HAL_PWR_EnableBkUpAccess();
 
-    /* Select the RTC clock source. LSI is used as a placeholder since no
-       board exists yet to confirm whether an LSE crystal is fitted --
-       the same "no board to confirm against" reasoning SystemClock_Config()
-       already applies to MSI vs the rest of the clock tree. Revisit once
-       hardware exists: LSE (typically 32.768 kHz) is normally preferred
-       for RTC timekeeping accuracy over LSI's much looser tolerance. */
-    RCC_OscInitTypeDef lsi_osc_init = {0};
-    lsi_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSI;
-    lsi_osc_init.LSIState = RCC_LSI_ON;
-    HAL_RCC_OscConfig(&lsi_osc_init);
+    /* The real board is fitted with a 32.768 kHz crystal, so the RTC
+       clock source is LSE, not the LSI placeholder this used to fall
+       back to for lack of a board to confirm against. LSEDRIVE_LOW is
+       the lowest (and lowest-power) drive strength -- appropriate for a
+       32.768 kHz watch crystal's low required drive level, but verify
+       this against the specific crystal's datasheet (load capacitance,
+       ESR) before flashing; too low a drive setting for a given
+       crystal/PCB combination can cause slow or unreliable startup.
+       HAL_RCC_OscConfig() blocks internally, polling LSERDY up to
+       LSE_STARTUP_TIMEOUT (5000 ms, stm32u0xx_hal_conf.h's default) --
+       crystal startup is inherently slower than an internal RC
+       oscillator's, so this call taking up to several seconds on the
+       very first boot (when the backup domain hasn't already latched
+       LSE on from a previous cycle) is expected, not a hang. */
+    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
+    RCC_OscInitTypeDef lse_osc_init = {0};
+    lse_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+    lse_osc_init.LSEState = RCC_LSE_ON;
+    HAL_RCC_OscConfig(&lse_osc_init);
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
 
     __HAL_RCC_RTC_ENABLE();
     s_rtc_handle.Instance = RTC;
     s_rtc_handle.Init.HourFormat = RTC_HOURFORMAT_24;
+    /* AsynchPrediv=127, SynchPrediv=255 divide RTCCLK by (127+1)*(255+1)
+       = 32768 to produce the 1 Hz SPRE clock platform_wakeup_timer_arm()
+       assumes below -- these values were already chosen assuming
+       exactly a 32.768 kHz RTCCLK, so switching to a real 32.768 kHz LSE
+       crystal is what actually makes that assumption correct (with LSI,
+       whose real frequency is nowhere near as tightly toleranced as a
+       crystal, the same divide would have produced a 1 Hz clock only
+       approximately, drifting with LSI's much larger tolerance). */
     s_rtc_handle.Init.AsynchPrediv = 127;
     s_rtc_handle.Init.SynchPrediv = 255;
     s_rtc_handle.Init.OutPut = RTC_OUTPUT_DISABLE;
@@ -120,16 +137,16 @@ void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc) {
 }
 
 void platform_wakeup_timer_arm(uint32_t seconds) {
-    /* HAL_RTCEx_SetWakeUpTimer's tick source and the arithmetic to turn
-       `seconds` into a wakeup-counter reload value depend on the RTC
-       clock source (LSE vs LSI) chosen for the real board -- this uses
-       the RTCCLK/16 wakeup clock (WUCKSEL_RTCCLK_DIV16), which needs the
-       RTC clock frequency confirmed against the STM32U031 reference
-       manual's RTC chapter before the `seconds`-to-ticks arithmetic
-       below can be trusted. Placeholder: assumes a 1 Hz effective tick,
-       i.e. reload value == seconds, which is only true for specific
-       clock configurations -- verify before flashing once hardware
-       exists. */
+    /* RTC_WAKEUPCLOCK_CK_SPRE_16BITS drives the wakeup counter from the
+       1 Hz SPRE clock (RTCCLK / (AsynchPrediv+1) / (SynchPrediv+1), see
+       rtc_init() above), so reload value == seconds directly -- this is
+       now correct by construction given the real board's 32.768 kHz LSE
+       crystal (rtc_init() selects LSE and sets the prediv values to
+       divide it down to exactly 1 Hz), rather than the "placeholder,
+       verify once hardware exists" state this was in before LSE was
+       confirmed fitted. Still verify the SPRE-clock derivation itself
+       against the STM32U031 reference manual's RTC chapter before
+       flashing. */
     HAL_RTCEx_DeactivateWakeUpTimer(&s_rtc_handle);
     HAL_RTCEx_SetWakeUpTimer_IT(&s_rtc_handle, seconds, RTC_WAKEUPCLOCK_CK_SPRE_16BITS, 0);
 }
