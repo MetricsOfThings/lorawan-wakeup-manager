@@ -53,3 +53,32 @@ void vault_log(const char *msg) {
        debug-only aid, not a latency-sensitive path. */
     HAL_UART_Transmit(&s_uart_handle, (const uint8_t *)msg, len, 100);
 }
+
+/* Bring-up diagnostic: bypasses HAL_UART_Transmit() entirely, writing
+   directly to USART2->TDR with an unbounded per-byte poll on ISR.TXE
+   (no HAL, no HAL_GetTick()/timeout dependency at all) -- isolates
+   whether HAL_UART_Transmit()'s own logic (its tick-based timeout in
+   particular) is truncating transmission, versus the USART2 peripheral
+   or its clock genuinely being unable to send past a certain point. If
+   this also truncates identically, the problem is below HAL entirely;
+   if it sends cleanly, the problem is specifically in
+   HAL_UART_Transmit(). Not part of the vault_log() contract -- called
+   directly from platform_init() for this one diagnostic pass only. */
+void stm32u031_uart_raw_transmit(const char *msg) {
+    uint16_t len = 0;
+    while (msg[len] != '\0') {
+        len++;
+    }
+    for (uint16_t i = 0; i < len; i++) {
+        while ((USART2->ISR & USART_ISR_TXE_TXFNF_Msk) == 0) {
+            /* Unbounded wait -- if the peripheral is genuinely stuck,
+               this hangs here forever rather than silently truncating,
+               which is itself useful diagnostic information (no further
+               bytes AND no further log lines ever appear). */
+        }
+        USART2->TDR = (uint32_t)(uint8_t)msg[i];
+    }
+    while ((USART2->ISR & USART_ISR_TC) == 0) {
+        /* Wait for the last byte to fully leave the shift register. */
+    }
+}

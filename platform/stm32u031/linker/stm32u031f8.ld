@@ -17,6 +17,7 @@ SECTIONS
     {
         *(.text*)
         *(.rodata*)
+        . = ALIGN(4);
     } > FLASH
 
     _sidata = LOADADDR(.data);

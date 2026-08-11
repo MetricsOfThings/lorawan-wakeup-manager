@@ -43,7 +43,14 @@ void platform_init(void) {
        gpio_init()/rtc_init() to match the LPC810 backend's ordering. */
 #ifdef VAULT_LOG_ENABLED
     extern void stm32u031_uart_init(void);
+    extern void stm32u031_uart_raw_transmit(const char *msg);
     stm32u031_uart_init();
+    /* Diagnostic-only: bypasses HAL_UART_Transmit() entirely to isolate
+       whether HAL's own logic or the peripheral/clock itself is behind
+       the truncation under investigation -- see the comment on
+       stm32u031_uart_raw_transmit() in platform_stm32u031_uart.c. Remove
+       once that's resolved. */
+    stm32u031_uart_raw_transmit("RAW: platform_init: uart ready\n");
 #endif
     vault_log("platform_init: uart ready\n");
 
