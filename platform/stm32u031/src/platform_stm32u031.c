@@ -163,8 +163,18 @@ static void i2c1_clock_source_init(void) {
        already selected independently in rtc_init() above. HSI must be
        explicitly turned on first: unlike MSI it is not guaranteed
        running at this point since SystemClock_Config() only configures
-       MSI. */
+       MSI. __HAL_RCC_HSI_ENABLE() only sets HSION -- it does not wait
+       for the oscillator to actually stabilize, so without the
+       HSIRDY spin-wait below, HAL_I2C_Init() a few lines down could
+       start clocking I2C1 from HSI before it's actually running,
+       corrupting the timing of whichever I2C transaction happens to
+       land first after each wake. Verify HSI's real startup time (and
+       thus whether this wait is ever observable in practice) against
+       the STM32U031 datasheet's oscillator characteristics table. */
     __HAL_RCC_HSI_ENABLE();
+    while (!__HAL_RCC_GET_FLAG(RCC_FLAG_HSIRDY)) {
+        /* Busy-wait for HSI to stabilize. */
+    }
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
