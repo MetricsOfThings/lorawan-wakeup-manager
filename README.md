@@ -7,10 +7,33 @@ Firmware for the "Data Vault" auxiliary MCU described in
 
 This project uses CMake with three targets, selected via `-DVAULT_TARGET`:
 
+### First-time setup: vendor submodules
+
+Before building any target, run:
+
+```bash
+./scripts/setup-vendor-submodules.sh
+```
+
+This initializes `vendor/CMSIS_5`, `vendor/STM32CubeU0`, and
+`vendor/Gecko_SDK` and is safe to re-run at any time. It matters
+specifically for `vendor/Gecko_SDK`: that submodule is a clone of
+Silicon Labs' Gecko SDK, a multi-gigabyte monorepo bundling several
+unrelated protocol stacks (Bluetooth, Zigbee, Thread, Matter, etc.).
+This repo's EFM32G210 backend only needs four of its subdirectories,
+so the script applies a `git sparse-checkout` to fetch just those —
+git does not record sparse-checkout scoping anywhere in the tracked
+repo (`.gitmodules` can't express it), so a plain
+`git submodule update --init --recursive` would check out the entire
+SDK instead and can exhaust disk space on a constrained host (this
+happened once during development; see
+`.superpowers/sdd/task-1-report.md`). Always use the script rather
+than a raw `git submodule update` for this repo.
+
 ### Host (unit tests, no hardware required)
 
 ```bash
-git submodule update --init --recursive
+./scripts/setup-vendor-submodules.sh
 mkdir -p build/host && cd build/host
 cmake ../.. -DVAULT_TARGET=host
 cmake --build .
