@@ -52,6 +52,12 @@ echo "==> Setting up vendor/Gecko_SDK (sparse checkout: platform/Device, platfor
 # platform/common headers emlib transitively depends on).
 gecko_sdk_dir="vendor/Gecko_SDK"
 
+# The exact commit this repo has pinned vendor/Gecko_SDK to -- read from
+# the superproject's own gitlink, not trusted from whatever a fresh
+# clone's default branch happens to be at checkout time. Read this
+# BEFORE any clone/fetch below touches the submodule.
+gecko_sdk_pinned_sha="$(git rev-parse "HEAD:${gecko_sdk_dir}")"
+
 # NOTE: we deliberately do NOT use `git submodule update --init` here.
 # `git submodule update` only accepts `--checkout|--rebase|--merge` as its
 # checkout-mode selector; `--no-checkout` is not a valid flag for that
@@ -78,8 +84,17 @@ git -C "$gecko_sdk_dir" sparse-checkout set \
     platform/emlib \
     platform/common
 
-echo "    Checking out sparse tree..."
-git -C "$gecko_sdk_dir" checkout
+# Pin to the exact commit recorded in the superproject rather than
+# whatever ref the initial clone's default branch happened to resolve
+# to -- a bare `git clone --no-checkout` (or a later `checkout` with no
+# argument) tracks the remote's CURRENT default-branch tip, which drifts
+# over time and would silently hand out a different, unverified SDK
+# snapshot than the one this repo actually vendors. `--depth 1` here
+# works because most Git hosts (including GitHub) support fetching an
+# arbitrary reachable commit SHA directly, not just branch/tag tips.
+echo "    Fetching and checking out the pinned commit (${gecko_sdk_pinned_sha})..."
+git -C "$gecko_sdk_dir" fetch --depth 1 origin "$gecko_sdk_pinned_sha"
+git -C "$gecko_sdk_dir" checkout "$gecko_sdk_pinned_sha"
 
 echo "==> Done. Vendor submodule status:"
 git submodule status
