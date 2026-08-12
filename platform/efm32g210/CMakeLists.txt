@@ -57,11 +57,8 @@ target_compile_options(vault_efm32g210_sdk_check PRIVATE -mcpu=cortex-m3 -mthumb
 # against this exact part's IRQn_Type enum in efm32g210f128.h -- see the
 # comments in startup_efm32g210.c for the (confirmed) gaps between the two.
 #
-# system_efm32g.c (SystemInit()/SystemCoreClock) is intentionally NOT
-# compiled into this target yet: nothing in this task's scope (this empty
-# main() and the startup file) calls SystemInit() or reads SystemCoreClock.
-# It will need to be added when clock init (Task 4) starts calling emlib
-# CMU functions that depend on it.
+# (system_efm32g.c was deferred here at Task 2/3 -- see the Task 4
+# comment below for why and when it was actually added.)
 #
 # SysTick_Handler: the vector table below defines it (weak alias to
 # Default_Handler, matching the other two backends), but no real handler

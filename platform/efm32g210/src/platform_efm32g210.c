@@ -18,11 +18,13 @@ extern void efm32g210_gpio_init(void);
    truncate to roughly 88 s), not a build or runtime error. At the
    32.768 kHz LFXO rate this backend runs the RTC at (see
    efm32g210_clock_init() below -- no additional prescaler beyond the
-   CMU_LFAPRESC0 register's DIV1 reset default is applied), 2^24 / 32768
-   = 512 seconds is the longest interval one COMP0 match can represent.
+   CMU_LFAPRESC0 register's DIV1 reset default is applied), (2^24-1) /
+   32768 = 511 seconds is the longest interval one COMP0 match can
+   represent (0x00FFFFFFu is the 24-bit mask, i.e. 2^24-1, not 2^24 --
+   the division floors, so this is 511, not a round 512).
    platform_wakeup_timer_arm() clamps to this instead of letting a
    larger request silently truncate to something shorter and wrong. */
-#define RTC_MAX_SECONDS (0x00FFFFFFu / 32768u) /* 512 */
+#define RTC_MAX_SECONDS (0x00FFFFFFu / 32768u) /* 511 */
 
 static void efm32g210_clock_init(void) {
     /* HFXO (32 MHz, already populated on-board per the Olimex schematic)
