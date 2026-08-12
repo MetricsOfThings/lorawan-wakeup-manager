@@ -101,6 +101,24 @@ platform/efm32g210/
   correct emlib call and that it actually blocks until an enabled
   wake source (the RTC compare interrupt) fires.
 
+**EM3 was considered and rejected.** EM3 (Stop Mode) draws less current
+than EM2 (0.6 µA vs. 0.9 µA per the board datasheet), and the watchdog
+(WDOG) can keep running in EM3 via its own always-on, independent 1 kHz
+ULFRCO (`WDOG_CTRL_EM3RUN`) — a theoretically viable EM3 wake source. But
+this generation's WDOG (confirmed against Silicon Labs' emlib API docs)
+has no interrupt capability at all: a timeout only ever triggers a full
+chip reset, never a clean interrupt-based wake. Using it would mean
+`platform_enter_low_power_sleep()` never actually returns — the chip
+restarts from `Reset_Handler`/`main()` every cycle instead of resuming
+mid-function — breaking `vault_core`'s resume-in-place assumption, and
+concretely discarding the master-configured `WAKE_INTERVAL_SEC` every
+cycle (`vault_core_init()` unconditionally resets it to the default on
+every boot). Fixable in principle (EM3 does retain RAM, so the interval
+could survive if `vault_core_init()` stopped unconditionally overwriting
+it), but that's a real change to shared `core/` code, not a backend-local
+detail, for ~0.3 µA of savings. Decision: stay with EM2/RTC-based
+resume-in-place.
+
 ## 6. I2C0 slave driver
 
 `platform_i2c_slave_init(addr)` configures `PD6`/`PD7` as I2C0 SDA/SCL
