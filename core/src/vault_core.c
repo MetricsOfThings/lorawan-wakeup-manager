@@ -16,13 +16,21 @@ void vault_core_step(void) {
     platform_i2c_slave_init(VAULT_I2C_ADDR);
 
     while (!vault_i2c_registers_done_requested()) {
-        /* Busy-wait. Real backends service I2C via an interrupt handler
-           that calls vault_i2c_registers_on_*() concurrently with this
-           loop; see platform/lpc810 and platform/stm32u031. Do not add
-           vault_log() calls to that ISR-driven path -- it blocks on a
-           slow UART transmit, which would corrupt I2C timing. This is
-           the only place safe to log what happened, after the ISR-driven
-           exchange has already finished. */
+        /* Real backends service I2C via an interrupt handler that calls
+           vault_i2c_registers_on_*() concurrently with this loop; see
+           platform/lpc810 and platform/stm32u031. Do not add vault_log()
+           calls to that ISR-driven path -- it blocks on a slow UART
+           transmit, which would corrupt I2C timing. This is the only
+           place safe to log what happened, after the ISR-driven
+           exchange has already finished.
+
+           platform_wait_for_interrupt() idles the CPU core between I2C
+           events instead of spinning at full power -- the main MCU stays
+           powered and transacting for however long its own boot/join
+           takes, and I2C is already entirely interrupt-driven, so there
+           is nothing useful for this loop to do at full CPU speed while
+           waiting. */
+        platform_wait_for_interrupt();
     }
 
     vault_log_u32("vault_core: context_valid=", vault_state_context_valid() ? 1u : 0u);

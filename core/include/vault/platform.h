@@ -10,6 +10,15 @@
 
 void platform_init(void);
 
+/* Halts the CPU core clock until any enabled interrupt fires, then
+   returns immediately after (e.g. ARM Cortex-M's WFI instruction).
+   Lighter than platform_enter_low_power_sleep(): peripherals, HFCLK, and
+   all other clocks keep running -- only the CPU core itself idles. Used
+   by vault_core's I2C wait loop so the CPU isn't spinning at full power
+   while idle between I2C-interrupt-driven byte events during the
+   (possibly lengthy) window the main MCU is powered and transacting. */
+void platform_wait_for_interrupt(void);
+
 /* Arms the wakeup timer/RTC to fire in `seconds` seconds. */
 void platform_wakeup_timer_arm(uint32_t seconds);
 void platform_wakeup_timer_clear(void);

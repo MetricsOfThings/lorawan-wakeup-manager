@@ -62,3 +62,15 @@ void platform_enter_low_power_sleep(void) {
 
     __asm volatile ("wfi");
 }
+
+void platform_wait_for_interrupt(void) {
+    /* SLEEPDEEP (SCB->SCR bit 2) persists once set -- platform_enter_low_power_sleep()
+       above sets it and never clears it, so without explicitly clearing it
+       here, any call to this function after the first full sleep cycle
+       would silently fall through to Deep-sleep/Power-down instead of
+       plain Sleep mode (CPU clock only, PDRUNCFG/PDSLEEPCFG domains
+       untouched). Plain WFI with SLEEPDEEP clear halts only the CPU
+       clock until any enabled interrupt (e.g. I2C0) fires. */
+    SCB->SCR &= ~(1u << 2);
+    __asm volatile ("wfi");
+}

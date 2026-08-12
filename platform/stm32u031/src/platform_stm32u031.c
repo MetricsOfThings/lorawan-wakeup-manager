@@ -314,3 +314,17 @@ void platform_enter_low_power_sleep(void) {
     HAL_ResumeTick();
     SystemClock_Config();
 }
+
+void platform_wait_for_interrupt(void) {
+    /* HAL_PWREx_EnterSTOP2Mode() (above) sets SCB->SCR's SLEEPDEEP bit
+       and never clears it -- confirmed directly in
+       stm32u0xx_hal_pwr_ex.c. Without explicitly clearing it here, any
+       call to this function after the first full Stop 2 cycle would
+       silently fall through to Stop 2 instead of plain Sleep mode (CPU
+       clock only, everything else -- including I2C1 -- still running
+       and able to service the interrupt this is waiting for). Plain
+       __WFI() with SLEEPDEEP clear halts only the CPU core clock until
+       any enabled interrupt fires. */
+    CLEAR_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
+    __WFI();
+}

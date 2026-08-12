@@ -70,6 +70,10 @@ void platform_main_rail_enable(bool on) {
 
 void platform_i2c_slave_init(uint8_t addr) {
     record_call(HOST_MOCK_CALL_I2C_SLAVE_INIT, addr);
+}
+
+void platform_wait_for_interrupt(void) {
+    record_call(HOST_MOCK_CALL_WAIT_FOR_INTERRUPT, 0);
     for (size_t t = 0; t < s_queued_count; t++) {
         for (size_t i = 0; i < s_queued[t].length; i++) {
             vault_i2c_registers_on_write_byte(s_queued[t].bytes[i]);
