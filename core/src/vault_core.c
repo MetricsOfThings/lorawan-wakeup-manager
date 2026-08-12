@@ -15,7 +15,7 @@ void vault_core_step(void) {
     vault_i2c_registers_reset_for_cycle();
     platform_i2c_slave_init(VAULT_I2C_ADDR);
 
-    while (!vault_i2c_registers_done_requested()) {
+    for (;;) {
         /* Real backends service I2C via an interrupt handler that calls
            vault_i2c_registers_on_*() concurrently with this loop; see
            platform/lpc810 and platform/stm32u031. Do not add vault_log()
@@ -29,8 +29,26 @@ void vault_core_step(void) {
            powered and transacting for however long its own boot/join
            takes, and I2C is already entirely interrupt-driven, so there
            is nothing useful for this loop to do at full CPU speed while
-           waiting. */
+           waiting.
+
+           The check-then-sleep is wrapped in platform_irq_disable()/
+           _enable() to close a lost-wakeup race: WFI has no event-latch,
+           so if the I2C interrupt that sets done_requested fires and is
+           fully serviced in the gap between the condition check and WFI
+           actually executing, WFI would then block forever with nothing
+           left to wake it (see platform_irq_disable()'s doc comment in
+           vault/platform.h for the full explanation). Masking interrupts
+           around the check closes that window: WFI still wakes on a
+           masked-but-pending interrupt, it just defers running the ISR
+           itself until interrupts are re-enabled below/at the top of the
+           next iteration. */
+        platform_irq_disable();
+        if (vault_i2c_registers_done_requested()) {
+            platform_irq_enable();
+            break;
+        }
         platform_wait_for_interrupt();
+        platform_irq_enable();
     }
 
     vault_log_u32("vault_core: context_valid=", vault_state_context_valid() ? 1u : 0u);

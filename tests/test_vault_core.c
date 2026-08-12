@@ -25,27 +25,51 @@ static void test_first_cycle_calls_in_order(void) {
 
     vault_core_step();
 
-    TEST_ASSERT(host_mock_call_count() >= 8);
+    /* vault_core.c's WAKE_MAIN wait loop is now:
+           for (;;) {
+               platform_irq_disable();
+               if (vault_i2c_registers_done_requested()) {
+                   platform_irq_enable();
+                   break;
+               }
+               platform_wait_for_interrupt();
+               platform_irq_enable();
+           }
+       (see Critical #1's fix -- masking interrupts around the check
+       closes a lost-wakeup race). The host mock only ever replays queued
+       transactions from inside platform_wait_for_interrupt(), so
+       done_requested() is false on the loop's first entry: iteration 1
+       disables, checks (false), waits (which replays the queued CMD_DONE
+       write and makes done_requested() true), then re-enables.
+       Iteration 2 disables, checks (now true), re-enables, and breaks --
+       without ever calling platform_wait_for_interrupt() again. That's
+       IRQ_DISABLE, WAIT_FOR_INTERRUPT, IRQ_ENABLE, IRQ_DISABLE, IRQ_ENABLE,
+       for a total of 5 calls covering the loop, 12 calls overall. */
+    TEST_ASSERT(host_mock_call_count() >= 12);
     TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(0)->call);
     TEST_ASSERT_EQ_INT(1, host_mock_call_at(0)->arg);
     TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_INIT, host_mock_call_at(1)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_IRQ_DISABLE, host_mock_call_at(2)->call);
     /* The mock replays queued I2C transactions from
        platform_wait_for_interrupt() (the wait loop's per-iteration
        hook), not from platform_i2c_slave_init() -- matching real
        hardware's ISR-driven timing, where nothing arrives until the
        loop actually waits. */
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_WAIT_FOR_INTERRUPT, host_mock_call_at(2)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_WAIT_FOR_INTERRUPT, host_mock_call_at(3)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_IRQ_ENABLE, host_mock_call_at(4)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_IRQ_DISABLE, host_mock_call_at(5)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_IRQ_ENABLE, host_mock_call_at(6)->call);
     /* The main rail must be cut BEFORE the I2C peripheral is torn down
        and the bus pins are reconfigured -- otherwise the master MCU is
        still powered and listening while those steps produce real
        transitions on SDA/SCL, right after it wrote CMD_DONE expecting
        an immediate, clean power loss. */
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(3)->call);
-    TEST_ASSERT_EQ_INT(0, host_mock_call_at(3)->arg);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_DEINIT, host_mock_call_at(4)->call);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_BUS_ISOLATE, host_mock_call_at(5)->call);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_WAKEUP_TIMER_ARM, host_mock_call_at(6)->call);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_ENTER_LOW_POWER_SLEEP, host_mock_call_at(7)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(7)->call);
+    TEST_ASSERT_EQ_INT(0, host_mock_call_at(7)->arg);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_DEINIT, host_mock_call_at(8)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_BUS_ISOLATE, host_mock_call_at(9)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_WAKEUP_TIMER_ARM, host_mock_call_at(10)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_ENTER_LOW_POWER_SLEEP, host_mock_call_at(11)->call);
 }
 
 static void test_default_interval_used_on_first_cycle(void) {

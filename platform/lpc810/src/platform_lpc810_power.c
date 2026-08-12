@@ -74,3 +74,15 @@ void platform_wait_for_interrupt(void) {
     SCB->SCR &= ~(1u << 2);
     __asm volatile ("wfi");
 }
+
+/* See vault/platform.h's doc comment for why these exist (closing a
+   lost-wakeup race around vault_core's WFI-based I2C wait loop). Plain
+   ARM CMSIS intrinsics -- WFI still wakes on a pending-but-masked
+   interrupt, per the ARM architecture. */
+void platform_irq_disable(void) {
+    __disable_irq();
+}
+
+void platform_irq_enable(void) {
+    __enable_irq();
+}

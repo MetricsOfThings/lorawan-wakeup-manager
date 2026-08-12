@@ -19,6 +19,32 @@ void platform_init(void);
    (possibly lengthy) window the main MCU is powered and transacting. */
 void platform_wait_for_interrupt(void);
 
+/* Globally disable/enable interrupts (e.g. ARM Cortex-M's CPSID i /
+   __disable_irq() and CPSIE i / __enable_irq()).
+
+   These exist to close a lost-wakeup race in vault_core's WAKE_MAIN I2C
+   wait loop. That loop is a `check condition, then WFI` pattern, and WFI
+   (unlike WFE/SEV) has no event-latch: if the interrupt that would set
+   the wake condition fires and is fully serviced (ISR runs to
+   completion, NVIC clears "pending") in the narrow window between the
+   condition being read as false and WFI actually executing, then at the
+   moment WFI runs there is no pending interrupt left to wake it, and it
+   blocks until some *other* interrupt happens to arrive -- which, at
+   this exact point in the wake cycle, is nothing, since the wake timer
+   isn't armed yet. That's a genuine, unrecoverable hang: the vault stays
+   awake forever, with no path back except a physical power cycle.
+
+   The fix is to mask interrupts around the check-and-sleep so the race
+   window closes: disable interrupts, check the condition, and if still
+   false, WFI, then re-enable. Critically, WFI still wakes the CPU from
+   sleep even with interrupts masked (PRIMASK set) -- the ARM
+   architecture guarantees this; only the ISR itself is deferred until
+   interrupts are unmasked again, not the wake event. So the pending
+   interrupt (masked, not lost) reliably wakes the WFI, and the next loop
+   iteration observes the now-true condition. */
+void platform_irq_disable(void);
+void platform_irq_enable(void);
+
 /* Arms the wakeup timer/RTC to fire in `seconds` seconds. */
 void platform_wakeup_timer_arm(uint32_t seconds);
 void platform_wakeup_timer_clear(void);

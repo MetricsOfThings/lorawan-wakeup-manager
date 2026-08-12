@@ -94,3 +94,20 @@ void platform_bus_isolate(void) {
 void platform_enter_low_power_sleep(void) {
     record_call(HOST_MOCK_CALL_ENTER_LOW_POWER_SLEEP, 0);
 }
+
+/* Functionally a no-op: the mock's I2C simulation is fully synchronous
+   (queued transactions replay entirely inside platform_wait_for_interrupt(),
+   see above -- no real concurrency, so there is no lost-wakeup race to
+   close here). Still recorded via record_call() so the new
+   disable/check/wait/enable call sequence vault_core.c's WAKE_MAIN loop
+   now performs has real host-mock test coverage, rather than silently
+   collapsing to an untested no-op -- matching how platform_wait_for_interrupt()
+   itself was given real host-mock coverage rather than being left
+   unrecorded. */
+void platform_irq_disable(void) {
+    record_call(HOST_MOCK_CALL_IRQ_DISABLE, 0);
+}
+
+void platform_irq_enable(void) {
+    record_call(HOST_MOCK_CALL_IRQ_ENABLE, 0);
+}
