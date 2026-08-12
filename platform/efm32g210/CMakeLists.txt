@@ -72,14 +72,40 @@ target_compile_options(vault_efm32g210_sdk_check PRIVATE -mcpu=cortex-m3 -mthumb
 # EFM32G210 is a Series 0 part, so that code path is dead here. No emlib
 # function reachable from this backend's later tasks (clock init, I2C)
 # was found to depend on a live SysTick interrupt.
+# Task 3: em_gpio.c/em_cmu.c/em_core.c are real emlib *source* files, not
+# just headers -- unlike the LPC810/STM32U031 backends' raw-register or
+# HAL-struct-based GPIO code, GPIO_PinModeSet()/GPIO_PinOutSet()/
+# GPIO_PinOutClear() and CMU_ClockEnable() (called from
+# platform_efm32g210_gpio.c) are declared non-inline in
+# vendor/Gecko_SDK/platform/emlib/inc/{em_gpio.h,em_cmu.h} for this
+# Series-0 part (confirmed: em_cmu.h's __STATIC_INLINE CMU_ClockEnable
+# stub only exists under #if defined(_SILICON_LABS_32B_SERIES_2_CONFIG_1),
+# which EFM32G210 does not define), so their real definitions must be
+# compiled in or the link fails with "undefined reference". em_core.c is
+# needed transitively: em_gpio.c's BUS_RegMaskedWrite() (from em_bus.h)
+# calls CORE_EnterCritical()/CORE_ExitCritical(), defined in em_core.c.
+# All three compiled cleanly against this sparse checkout's vendored
+# headers with no additional missing-header surprises (em_cmu.c's own
+# #includes -- em_syscfg.h, em_msc.h, sl_component_catalog.h, etc. --
+# were already present or conditionally compiled out for this part).
 add_executable(vault_efm32g210
     src/startup_efm32g210.c
     src/main.c
+    src/platform_efm32g210_gpio.c
+    ${GECKO_SDK_ROOT}/platform/emlib/src/em_gpio.c
+    ${GECKO_SDK_ROOT}/platform/emlib/src/em_cmu.c
+    ${GECKO_SDK_ROOT}/platform/emlib/src/em_core.c
 )
 
 target_include_directories(vault_efm32g210 PRIVATE
     ${EFM32G210_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    # core/include: needed starting this task for vault/platform.h
+    # (platform_main_rail_enable/platform_bus_isolate declarations,
+    # included by platform_efm32g210_gpio.c). vault_core itself is still
+    # not linked -- same "headers now, link later" precedent LPC810's
+    # CMakeLists.txt set at its own equivalent GPIO task.
+    ${CMAKE_SOURCE_DIR}/core/include
 )
 
 target_compile_definitions(vault_efm32g210 PRIVATE EFM32G210F128)
