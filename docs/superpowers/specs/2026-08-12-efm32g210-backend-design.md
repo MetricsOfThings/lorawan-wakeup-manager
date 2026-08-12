@@ -140,6 +140,41 @@ Bus speed: match the existing 400 kHz Fast-mode target already
 established for both other backends, once real hardware timing can be
 verified.
 
+### 6.1 Idle power while waiting for I2C
+
+`core/vault_core.c`'s `WAKE_MAIN` wait loop now calls a new HAL contract
+function, `platform_wait_for_interrupt()`, once per iteration instead of
+busy-spinning — added across all three backends (this design's `emlib`
+implementation should just call `__WFI()`, matching the LPC810/STM32U031
+backends' plain Cortex-M `WFI` implementations). This halts the CPU core
+clock until any enabled interrupt (I2C0's, in particular) fires, cutting
+active-mode power during the — possibly lengthy — window the main MCU is
+powered but not actively transacting on the bus at that exact instant.
+
+**Future enhancement, not part of this implementation:** the board's own
+feature list claims I2C "address recognition in Stop Mode" — i.e.
+potentially deeper than plain `WFI`, an actual EM2-class sleep *during*
+`WAKE_MAIN` that only wakes on this device's own I2C address match,
+rather than gating just the CPU clock while every peripheral keeps
+running. This would cut power further than `platform_wait_for_interrupt()`
+alone, but needs its own follow-up work before it's safe to build:
+
+- Confirm against the EFM32G210 reference manual (not just the board's
+  summary datasheet bullet) exactly which energy mode "Stop Mode" refers
+  to here, and whether address recognition needs a dedicated low-power
+  compare path independent of the main I2C peripheral clock (the same
+  kind of "separate always-on path" the RTC wake needed via LFXO).
+- This would need its own new optional HAL hook (distinct from
+  `platform_wait_for_interrupt()`, since going to EM2 mid-transaction has
+  real implications HAL_PWREx-class deep sleep doesn't for a mid-loop
+  WFI) — LPC810/STM32U031 would implement it as a no-op or fall back to
+  `platform_wait_for_interrupt()`, EFM32 would implement real EM2 entry.
+- Verify it correctly resumes the I2C peripheral's own state machine
+  (address match, RX/TX flag handling in `I2C0_IRQHandler`) after waking
+  from a deeper sleep than plain `WFI` leaves it in — plain `WFI` never
+  stops the I2C peripheral clock at all, so this is a materially
+  different resume path, not just "the same thing but deeper."
+
 ## 7. Debug UART
 
 USART1 TX-only on `PC0`, 57600 8N1 — matching the fixed baud rate already
