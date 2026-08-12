@@ -109,11 +109,24 @@ target_compile_options(vault_efm32g210_sdk_check PRIVATE -mcpu=cortex-m3 -mthumb
 # reset HFRCO frequency) until/unless something calls SystemCoreClockGet()
 # to refresh it, which is a pre-existing gap this task did not introduce
 # and does not fix.
+# Task 5: platform_efm32g210_i2c.c implements I2C0 in slave mode entirely
+# via direct register access (I2C0->CTRL/SADDR/ROUTE/IEN/IF/IFC/RXDATA/
+# TXDATA), the same "closer to raw register access than HAL-callback"
+# style the design spec (§6) anticipated for this backend -- it does not
+# call any of em_i2c.h's non-inline functions (I2C_Init/I2C_Enable/
+# I2C_BusFreqSet/I2C_Transfer/I2C_TransferInit/I2C_Reset are all written
+# for master-mode polled transfers, per that same header, and none are
+# used here). So unlike em_gpio.c/em_cmu.c/em_core.c/em_rtc.c above,
+# em_i2c.c is NOT added to target_sources: nothing in
+# platform_efm32g210_i2c.c calls a non-inline em_i2c.h function, so
+# there is no "undefined reference" to fix (checked by attempting the
+# link without it, same discipline as Task 4's system_efm32g.c addition).
 add_executable(vault_efm32g210
     src/startup_efm32g210.c
     src/main.c
     src/platform_efm32g210_gpio.c
     src/platform_efm32g210.c
+    src/platform_efm32g210_i2c.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_gpio.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_cmu.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_core.c
@@ -146,12 +159,14 @@ set_target_properties(vault_efm32g210 PROPERTIES
     LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker/efm32g210f128.ld
 )
 
-# vault_core is not linked yet: platform_init() has no efm32g210
-# implementation until Task 3 onward, and main.c doesn't call into
-# vault_core yet either (see src/main.c). Matches the precedent set by
-# both other backends, which added this link only once a real caller
-# existed (LPC810: Task 9, once platform_lpc810_i2c.c needed
-# vault_i2c_registers_on_*()).
+# platform_efm32g210_i2c.c calls vault_i2c_registers_on_*(), defined in
+# vault_core; link it in now that the I2C driver needs it (Task 5), the
+# same point (once a real caller exists) both other backends added this
+# link at (LPC810: Task 9, once platform_lpc810_i2c.c needed
+# vault_i2c_registers_on_*()). vault_core's own -mcpu/-mthumb/-Os compile
+# options are set in core/CMakeLists.txt, keyed on VAULT_TARGET, rather
+# than duplicated here.
+target_link_libraries(vault_efm32g210 PRIVATE vault_core)
 
 add_custom_command(TARGET vault_efm32g210 POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_efm32g210>
