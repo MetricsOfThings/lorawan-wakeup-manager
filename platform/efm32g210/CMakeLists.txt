@@ -121,6 +121,13 @@ target_compile_options(vault_efm32g210_sdk_check PRIVATE -mcpu=cortex-m3 -mthumb
 # platform_efm32g210_i2c.c calls a non-inline em_i2c.h function, so
 # there is no "undefined reference" to fix (checked by attempting the
 # link without it, same discipline as Task 4's system_efm32g.c addition).
+# Task 6: em_emu.c is likewise a real emlib *source* file for this part --
+# EMU_EnterEM2() (called from platform_efm32g210.c's
+# platform_enter_low_power_sleep()) is declared without __STATIC_INLINE
+# in em_emu.h (unlike EMU_EnterEM1(), which is header-only inline), so
+# its definition must be compiled in or the link fails with "undefined
+# reference to EMU_EnterEM2" -- confirmed by actually attempting the
+# link without it first, same discipline as Task 4/5 above.
 add_executable(vault_efm32g210
     src/startup_efm32g210.c
     src/main.c
@@ -131,6 +138,7 @@ add_executable(vault_efm32g210
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_cmu.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_core.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_rtc.c
+    ${GECKO_SDK_ROOT}/platform/emlib/src/em_emu.c
     ${GECKO_SDK_ROOT}/platform/Device/SiliconLabs/EFM32G/Source/system_efm32g.c
 )
 

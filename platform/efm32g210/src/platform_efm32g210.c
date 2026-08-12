@@ -1,5 +1,6 @@
 #include "vault/platform.h"
 #include "em_cmu.h"
+#include "em_emu.h"
 #include "em_rtc.h"
 
 extern void efm32g210_gpio_init(void);
@@ -153,4 +154,48 @@ void platform_wakeup_timer_clear(void) {
    interval-elapsed condition that needs acknowledging. */
 void RTC_IRQHandler(void) {
     platform_wakeup_timer_clear();
+}
+
+/* EM2 (Deep Sleep) -- retains RAM and CPU state, keeps the RTC/LFXO
+   running (LFXO feeds the RTC via the LFA branch, and EM2 only disables
+   the *high*-frequency clocks, per em_emu.c's EMU_EnterEM2()/EMU_EnterEM3()
+   doc comments -- EM3 is the mode that additionally disables LFXO/LFRCO
+   by software), matching vault_core's resume-in-place assumption. EM3 is
+   not used here for exactly that reason: it would stop the RTC and this
+   backend's timed wake (platform_wakeup_timer_arm()) would never fire.
+   `true` (the `restore` argument) asks EMU_EnterEM2() to save/restore
+   oscillator and clock state across the sleep, which is the documented,
+   non-EM01VSCALE-specific EFM32G behavior on this Series-0 part (the
+   EM01 voltage-scaling restore path in em_emu.c is gated on
+   EMU_VSCALE_EM01_PRESENT/_SILICON_LABS_32B_SERIES >= 2, neither of which
+   this part defines) -- it does not affect GPIO output latching, which on
+   this part is controlled by the GPIO peripheral itself (always retained
+   in EM2, per the reference manual's EM2 peripheral-retention table), not
+   by anything EMU_EnterEM2()'s `restore` argument touches.
+
+   Confirmed directly against the vendored em_emu.c: EMU_EnterEM2() sets
+   SCB->SCR's SLEEPDEEP bit, then blocks on a real __WFI() (the
+   ERRATA_FIX_EMU_E110_ENABLE/ERRATA_FIX_EMU_E220_DECBOD_ENABLE branches
+   this part doesn't define both fall through to the plain `__WFI();` at
+   the bottom of the #if chain), which is what actually blocks until an
+   enabled interrupt -- RTC's COMP0 match, armed by
+   platform_wakeup_timer_arm() before this is called, since NVIC_EnableIRQ(RTC_IRQn)
+   was already done in efm32g210_rtc_init() -- wakes the core. Function
+   returns after that WFI (plus its own post-wake bookkeeping), i.e. it
+   really does block for the sleep duration rather than returning
+   immediately.
+
+   Critically, EMU_EnterEM2() sets SCB_SCR_SLEEPDEEP_Msk on entry and
+   never clears it before returning (only the header's __STATIC_INLINE
+   EMU_EnterEM1() clears it) -- the exact same hazard already hit and
+   fixed on this repo's other two backends (platform_lpc810_power.c's
+   platform_enter_low_power_sleep() sets SLEEPDEEP and never clears it;
+   platform_stm32u031.c's HAL_PWREx_EnterSTOP2Mode() does the same).
+   Without a fix, any later platform_wait_for_interrupt() call in the
+   same power cycle (platform_efm32g210_i2c.c) would silently fall
+   through to full EM2 deep sleep instead of a plain, light WFI wait --
+   see the fix applied there, matching both other backends'
+   platform_wait_for_interrupt() pattern. */
+void platform_enter_low_power_sleep(void) {
+    EMU_EnterEM2(true);
 }

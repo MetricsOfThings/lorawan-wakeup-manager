@@ -118,25 +118,19 @@ void platform_i2c_slave_deinit(void) {
 }
 
 void platform_wait_for_interrupt(void) {
-    /* Plain WFI. EFM32's deep-sleep entry (EMU_EnterEM2()/EM3, Task 6's
-       platform_enter_low_power_sleep()) does not exist yet in this
-       codebase, so there is no SLEEPDEEP-setting code anywhere in this
-       backend today for this call to conflict with -- the SCB->SCR
-       SLEEPDEEP bit is architecturally shared between plain WFI and deep
-       sleep on Cortex-M3 exactly as it is on the Cortex-M0+ parts the
-       LPC810/STM32U031 backends target (same ARMv7-M/ARMv6-M sleep-mode-
-       selection mechanism), so the same hazard *would* apply once
-       something sets SLEEPDEEP and leaves it set. But guarding against
-       it here, preemptively, would be guarding against a bug that
-       doesn't exist yet in a function that doesn't exist yet -- adding a
-       speculative "clear SLEEPDEEP" here now cannot be verified against
-       real deep-sleep-entry code and risks silently masking a real
-       ordering bug when Task 6 lands. This is correctly Task 6's
-       responsibility: platform_enter_low_power_sleep() must leave
-       SLEEPDEEP clear on return (either by never setting it in the first
-       place outside the WFI that enters EM2, or by explicitly clearing
-       it before returning), the same fix already applied on the other
-       two backends. */
+    /* platform_enter_low_power_sleep() (platform_efm32g210.c, Task 6)
+       calls EMU_EnterEM2(), which sets SCB->SCR's SLEEPDEEP bit and
+       never clears it -- confirmed directly in the vendored
+       vendor/Gecko_SDK/platform/emlib/src/em_emu.c. Without explicitly
+       clearing it here, any call to this function after the first full
+       EM2 sleep cycle would silently fall through to EM2 deep sleep
+       instead of plain Sleep mode (CPU clock only, everything else --
+       including I2C0 -- still running and able to service the interrupt
+       this is waiting for). Plain __WFI() with SLEEPDEEP clear halts
+       only the CPU core clock until any enabled interrupt fires. Same
+       fix, same hazard class, as platform_lpc810_power.c's and
+       platform_stm32u031.c's platform_wait_for_interrupt(). */
+    SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
     __WFI();
 }
 
