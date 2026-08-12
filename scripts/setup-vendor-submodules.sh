@@ -52,9 +52,22 @@ echo "==> Setting up vendor/Gecko_SDK (sparse checkout: platform/Device, platfor
 # platform/common headers emlib transitively depends on).
 gecko_sdk_dir="vendor/Gecko_SDK"
 
+# NOTE: we deliberately do NOT use `git submodule update --init` here.
+# `git submodule update` only accepts `--checkout|--rebase|--merge` as its
+# checkout-mode selector; `--no-checkout` is not a valid flag for that
+# subcommand (it belongs to `git clone`/`git switch`, not `submodule
+# update`), so that invocation fails a usage check on every released git
+# version once `set -euo pipefail` is in effect. Instead we register the
+# submodule and do the blobless, no-checkout clone ourselves, then formally
+# absorb it into the superproject's submodule bookkeeping.
+git submodule init -- "$gecko_sdk_dir"
+
 if [ ! -d "$gecko_sdk_dir/.git" ] && [ ! -f "$gecko_sdk_dir/.git" ]; then
     echo "    Initializing vendor/Gecko_SDK submodule (blobless, shallow, no checkout yet)..."
-    git submodule update --init --depth 1 --filter=blob:none --no-checkout -- "$gecko_sdk_dir"
+    gecko_sdk_url="$(git config -f .gitmodules --get "submodule.${gecko_sdk_dir}.url")"
+    git clone --filter=blob:none --no-checkout --depth 1 --single-branch \
+        "$gecko_sdk_url" "$gecko_sdk_dir"
+    git submodule absorbgitdirs -- "$gecko_sdk_dir"
 fi
 
 echo "    Configuring sparse-checkout (cone mode)..."
