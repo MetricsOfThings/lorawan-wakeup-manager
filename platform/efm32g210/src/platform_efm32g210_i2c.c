@@ -119,28 +119,32 @@ void platform_i2c_slave_init(uint8_t addr) {
     I2C0->CTRL |= I2C_CTRL_SLAVE | I2C_CTRL_AUTOACK | I2C_CTRL_EN;
 
     /* Enable the relevant interrupt sources: address match, RX data
-       valid, TX buffer level, and slave STOP. I2C_IEN_TXBL is required
-       here even though it's not mentioned in the brief's IEN write --
-       the handler below acts on I2C_IF_TXBL, but IF reflects raw
-       peripheral status regardless of IEN; if TXBL is the only pending
-       condition during a master-read transaction and it isn't enabled
-       in IEN, no interrupt is ever raised and I2C0_IRQHandler never
-       runs, so no byte is ever shipped to the master -- a silent read-
-       side hang. Field names (I2C_IEN_ADDR, I2C_IEN_RXDATAV,
+       valid, and slave STOP. Field names (I2C_IEN_ADDR, I2C_IEN_RXDATAV,
        I2C_IEN_TXBL, I2C_IEN_SSTOP) confirmed against efm32g210f128.h.
 
-       TXBL is a level-sensitive status flag, not an edge/event flag: it
-       reflects "TX buffer has room" and is asserted at reset
-       (_I2C_IF_RESETVALUE has bit 4 set, confirmed in efm32g_i2c.h) and
-       is NOT clearable via IFC (_I2C_IFC_MASK excludes bit 4). That
-       means the moment NVIC_EnableIRQ(I2C0_IRQn) below runs,
-       I2C0_IRQHandler fires immediately with the bus idle -- TXBL is
-       enabled in IEN and already pending. I2C0_IRQHandler's TXBL branch
-       therefore gates on I2C0->STATE's TRANSMITTER bit before acting on
-       it, so this always-true-at-idle status flag can be safely enabled
-       here without corrupting the read-side protocol state before any
-       real master transaction has occurred. */
-    I2C0->IEN = I2C_IEN_ADDR | I2C_IEN_RXDATAV | I2C_IEN_TXBL | I2C_IEN_SSTOP;
+       I2C_IEN_TXBL is deliberately NOT included here. TXBL is a
+       level-sensitive status flag, not an edge/event flag: it reflects
+       "TX buffer has room" and is asserted at reset (_I2C_IF_RESETVALUE
+       has bit 4 set, confirmed in efm32g_i2c.h) and is NOT clearable via
+       IFC (_I2C_IFC_MASK excludes bit 4). The only way to deassert it is
+       to write TXDATA. That combination means TXBL cannot be enabled in
+       IEN unconditionally at init: if it were, it would be pending the
+       instant NVIC_EnableIRQ(I2C0_IRQn) runs (bus idle, nothing to
+       transmit), and because nothing here ever writes TXDATA while
+       idle, the flag would never clear -- I2C0_IRQHandler would
+       tail-chain forever at full CPU speed, defeating
+       platform_wait_for_interrupt()'s __WFI() (every WFI would return
+       immediately because an interrupt is permanently pending) and
+       burning power for as long as the peripheral stays enabled.
+
+       Instead, I2C_IEN_TXBL is enabled/disabled dynamically by
+       I2C0_IRQHandler itself, bracketing exactly the window where the
+       peripheral is genuinely an addressed transmitter: enabled in the
+       ADDR branch once I2C0->STATE's TRANSMITTER bit confirms a master
+       read has actually started (so TXBL only becomes pending once
+       there is a real TXDATA write coming to clear it), and disabled
+       again in the SSTOP branch once the transaction completes. */
+    I2C0->IEN = I2C_IEN_ADDR | I2C_IEN_RXDATAV | I2C_IEN_SSTOP;
 
     NVIC_EnableIRQ(I2C0_IRQn);
 }
@@ -211,20 +215,29 @@ void I2C0_IRQHandler(void) {
     if (flags & I2C_IF_ADDR) {
         (void)I2C0->RXDATA; /* consume the matched address byte */
         I2C0->IFC = I2C_IFC_ADDR;
+
+        /* A master READ addresses this slave as transmitter --
+           I2C0->STATE's TRANSMITTER bit (confirmed in efm32g_i2c.h)
+           reflects this immediately after the address match. Only now,
+           with a real transaction underway that will shortly write
+           TXDATA (clearing TXBL -- see platform_i2c_slave_init()'s
+           I2C_IEN_TXBL comment), is it safe to enable I2C_IEN_TXBL: the
+           flag is level-sensitive and already pending the moment
+           there's room in TXDATA, so enabling it here immediately
+           raises the interrupt for the first byte, as intended. */
+        if (I2C0->STATE & I2C_STATE_TRANSMITTER) {
+            I2C0->IEN |= I2C_IEN_TXBL;
+        }
     } else if (flags & I2C_IF_RXDATAV) {
         vault_i2c_registers_on_write_byte((uint8_t)I2C0->RXDATA);
     }
 
-    /* TXBL is a level-sensitive "TX buffer has room" status flag that is
-       asserted even with the bus idle (see the I2C_IEN_TXBL comment in
-       platform_i2c_slave_init()) -- so it must additionally be gated on
-       I2C0->STATE's TRANSMITTER bit here, confirming the peripheral is
-       genuinely an addressed transmitter mid-transaction, before acting
-       on it. Without this gate, the always-pending-at-idle TXBL status
-       fires vault_i2c_registers_on_read_request() the moment the IRQ is
-       enabled in platform_i2c_slave_init(), before any real master read
-       has happened, corrupting the read-side register-map state on
-       every init. I2C_STATE_TRANSMITTER confirmed in efm32g_i2c.h. */
+    /* Belt-and-braces: even though I2C_IEN_TXBL is now only enabled
+       while STATE.TRANSMITTER is set (see the ADDR branch above), gate
+       on it here too before acting on TXBL, since it's a level-sensitive
+       status flag that could in principle still be pending across a
+       state transition within the same IF snapshot. I2C_STATE_TRANSMITTER
+       confirmed in efm32g_i2c.h. */
     if ((flags & I2C_IF_TXBL) && (I2C0->STATE & I2C_STATE_TRANSMITTER)) {
         I2C0->TXDATA = vault_i2c_registers_on_read_request();
     }
@@ -232,5 +245,11 @@ void I2C0_IRQHandler(void) {
     if (flags & I2C_IF_SSTOP) {
         I2C0->IFC = I2C_IFC_SSTOP;
         vault_i2c_registers_on_stop();
+
+        /* Transaction is over -- disable TXBL again so it doesn't stay
+           armed (and thus storming, per the I2C_IEN_TXBL comment in
+           platform_i2c_slave_init()) until the next master read starts
+           it back up via the ADDR branch above. */
+        I2C0->IEN &= ~I2C_IEN_TXBL;
     }
 }

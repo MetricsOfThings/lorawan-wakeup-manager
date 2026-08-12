@@ -21,18 +21,47 @@ extern void efm32g210_gpio_init(void);
    cap represesentable intervals at (2^24-1) / 32768 ~= 511 seconds --
    far short of VAULT_REG_WAKE_INTERVAL_SEC's full 4-byte range, and much
    less than the other two backends' effective ceiling), efm32g210_clock_init()
-   below sets the LFAPRESC0 divisor to cmuClkDiv_32768, turning the RTC
-   into a genuine 1 Hz counter: COMP0 == seconds directly, no multiply,
-   and the ceiling becomes (2^24-1) seconds (~194 days) -- functionally
-   unlimited for this protocol. Confirmed cmuClkDiv_32768 is a real,
-   valid CMU_ClockDivSet() divisor for the RTC's LFAPRESC0 register
-   against the vendored em_cmu.h (RTC's divisor field width matches
-   cmuClkDiv_1 through cmuClkDiv_32768, i.e. up to divide-by-2^15). The
-   clamp below still exists as a defensive floor/ceiling on the 24-bit
-   register itself, in case something upstream ever changes the
-   prescaler, but at 1 Hz it is effectively never hit by any interval
-   this protocol can express. */
-#define RTC_MAX_SECONDS 0x00FFFFFFu /* 2^24-1, ~194 days at 1 Hz */
+   below sets the LFAPRESC0 divisor to cmuClkDiv_32 (DIV32), turning the
+   RTC into a 1024 Hz counter: COMP0 == seconds * 1024, and the ceiling
+   becomes (2^24-1) / 1024 ~= 16383 seconds (~4.55 hours) -- far past any
+   wake interval this protocol's design docs describe (minutes to low
+   hours). Confirmed cmuClkDiv_32 is a real, valid CMU_ClockDivSet()
+   divisor for the RTC's LFAPRESC0 register against the vendored
+   em_cmu.h (_CMU_LFAPRESC0_RTC_DIV32 == 0x5, confirmed in
+   efm32g210f128.h).
+
+   An earlier version of this fix used cmuClkDiv_32768 (a genuine 1 Hz
+   counter, COMP0 == seconds directly, ~194-day ceiling). That was
+   reverted: RTC_Enable() and RTC_CompareSet() (vendored em_rtc.c) both
+   call an internal regSync() that busy-waits on RTC->SYNCBUSY for the
+   write to propagate into the RTC's own low-frequency clock domain --
+   and on this Gecko-family part (_EFM32_GECKO_FAMILY, confirmed in
+   efm32g210f128.h), that domain runs at the RTC's own *post-prescaler*
+   clock, because CMU_LFAPRESC0 divides the clock in the CMU before it
+   ever reaches the RTC block (see efm32g210_clock_init()'s comment) --
+   the RTC receives only the already-divided clock, and both its counter
+   and its sync handshake logic run on that one clock. At 1 Hz, each
+   regSync() call (documented as resolving in about 3 clock cycles) costs
+   roughly 3 seconds of real busy-wait, and platform_wakeup_timer_arm()
+   below calls RTC_Enable()/RTC_CompareSet()/RTC_Enable() -- five
+   regSync() calls total -- every single time it arms the wake timer,
+   which is every wake cycle. That is a full-power busy-wait of up to
+   ~15 seconds added to every arm() call, silently eating into the
+   requested interval and burning exactly the power this design exists
+   to avoid. At 1024 Hz (cmuClkDiv_32), the same ~3-cycle sync cost is
+   roughly 3ms per call (~15ms worst case for all five calls per arm()) --
+   negligible, not power-relevant, and the ceiling still comfortably
+   covers this protocol's realistic wake intervals.
+
+   The clamp below still exists as a defensive floor/ceiling on the
+   24-bit register itself, in case something upstream ever changes the
+   prescaler again. */
+#define RTC_MAX_SECONDS 16383u /* (2^24-1) / 1024, ~4.55 hours at 1024 Hz */
+
+/* RTC tick rate after efm32g210_clock_init()'s cmuClkDiv_32 prescaler
+   (32768 Hz LFXO / 32 == 1024 Hz). platform_wakeup_timer_arm() multiplies
+   requested seconds by this to get the COMP0 tick count. */
+#define RTC_TICKS_PER_SEC 1024u
 
 static void efm32g210_clock_init(void) {
     /* HFXO (32 MHz, already populated on-board per the Olimex schematic)
@@ -66,14 +95,18 @@ static void efm32g210_clock_init(void) {
        prescaler between LFXO/LFA and the actual counter increment rate,
        and CMU_LFAPRESC0_RTC's field is 4 bits wide with encodings for
        DIV1 through DIV32768 (confirmed against efm32g210f128.h:
-       _CMU_LFAPRESC0_RTC_MASK == 0xF, _CMU_LFAPRESC0_RTC_DIV32768 ==
-       0xF). Using cmuClkDiv_32768 here divides the 32.768 kHz LFXO down
-       to a genuine 1 Hz RTC counter rate, so COMP0 == seconds directly
-       (see RTC_MAX_SECONDS' comment above) -- this replaces an earlier
-       DIV1 (no division) configuration that left COMP0's 24-bit width as
-       a hard ~511-second wake-interval ceiling, silently far short of
-       VAULT_REG_WAKE_INTERVAL_SEC's full 4-byte range. */
-    CMU_ClockDivSet(cmuClock_RTC, cmuClkDiv_32768);
+       _CMU_LFAPRESC0_RTC_MASK == 0xF, _CMU_LFAPRESC0_RTC_DIV32 == 0x5).
+       This prescaler divide happens in the CMU, upstream of the RTC
+       block itself -- the RTC's own clock input is already the divided
+       result. Using cmuClkDiv_32 here divides the 32.768 kHz LFXO down
+       to a 1024 Hz RTC counter rate (see RTC_MAX_SECONDS' comment above
+       for why DIV32 was chosen over the more aggressive DIV32768, and
+       RTC_TICKS_PER_SEC for the resulting tick-to-seconds arithmetic)
+       -- this replaces an earlier DIV1 (no division) configuration that
+       left COMP0's 24-bit width as a hard ~511-second wake-interval
+       ceiling, silently far short of VAULT_REG_WAKE_INTERVAL_SEC's full
+       4-byte range. */
+    CMU_ClockDivSet(cmuClock_RTC, cmuClkDiv_32);
     CMU_ClockEnable(cmuClock_RTC, true);
 }
 
@@ -101,7 +134,7 @@ static void efm32g210_rtc_init(void) {
        HAL_RTCEx_SetWakeUpTimer_IT() both already establish for the other
        two backends). With comp0Top=false the counter would keep
        free-running past each match instead of resetting, so a later
-       RTC_CompareSet() call using this file's `seconds * 32768u`
+       RTC_CompareSet() call using this file's `seconds * RTC_TICKS_PER_SEC`
        (an absolute value counted from 0) could set COMP0 below the
        counter's already-advanced current value, and it would then not
        match again until a full 24-bit counter wraparound -- effectively
@@ -147,9 +180,11 @@ void platform_wakeup_timer_arm(uint32_t seconds) {
        COMP0 register -- see RTC_MAX_SECONDS' comment above. Clamping
        errs toward waking sooner than requested, never later, which is
        the safe direction for a wake timer. With the RTC now running at
-       1 Hz (efm32g210_clock_init()'s cmuClkDiv_32768 prescaler), COMP0
-       == seconds directly -- no multiply needed. */
+       1024 Hz (efm32g210_clock_init()'s cmuClkDiv_32 prescaler), COMP0
+       == seconds * RTC_TICKS_PER_SEC -- clamp first (in seconds) so the
+       multiply below can't overflow or wrap past the 24-bit register. */
     uint32_t clamped_seconds = (seconds > RTC_MAX_SECONDS) ? RTC_MAX_SECONDS : seconds;
+    uint32_t comp0_ticks = clamped_seconds * RTC_TICKS_PER_SEC;
 
     /* RTC_Enable(true) on an already-enabled RTC is a no-op for the
        counter -- it only writes CTRL.EN (see em_rtc.c's RTC_Enable(),
@@ -166,7 +201,7 @@ void platform_wakeup_timer_arm(uint32_t seconds) {
        cycle and already past the new value (which would require a full
        24-bit wraparound to match again). */
     RTC_Enable(false);
-    RTC_CompareSet(0, clamped_seconds);
+    RTC_CompareSet(0, comp0_ticks);
     RTC_IntEnable(RTC_IEN_COMP0);
     RTC_Enable(true);
 }
