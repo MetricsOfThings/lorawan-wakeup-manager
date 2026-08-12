@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT DEFINED VAULT_TARGET)
-    set(VAULT_TARGET "host" CACHE STRING "Build target: host, lpc810, stm32u031")
+    set(VAULT_TARGET "host" CACHE STRING "Build target: host, lpc810, stm32u031, efm32g210")
 endif()
 
-if(VAULT_TARGET STREQUAL "lpc810" OR VAULT_TARGET STREQUAL "stm32u031")
+if(VAULT_TARGET STREQUAL "lpc810" OR VAULT_TARGET STREQUAL "stm32u031" OR VAULT_TARGET STREQUAL "efm32g210")
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/cmake/toolchain-arm-none-eabi.cmake" CACHE FILEPATH "")
 endif()
 
@@ -46,6 +46,8 @@ elseif(VAULT_TARGET STREQUAL "lpc810")
     add_subdirectory(platform/lpc810)
 elseif(VAULT_TARGET STREQUAL "stm32u031")
     add_subdirectory(platform/stm32u031)
+elseif(VAULT_TARGET STREQUAL "efm32g210")
+    add_subdirectory(platform/efm32g210)
 else()
-    message(FATAL_ERROR "Unknown VAULT_TARGET: ${VAULT_TARGET} (expected host, lpc810, or stm32u031)")
+    message(FATAL_ERROR "Unknown VAULT_TARGET: ${VAULT_TARGET} (expected host, lpc810, stm32u031, or efm32g210)")
 endif()
