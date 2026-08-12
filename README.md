@@ -74,7 +74,7 @@ This target compiles and links against the vendored STM32Cube HAL but has
 not been flashed or validated on real silicon yet — see the design spec's
 "out of scope" section.
 
-### EFM32G210F128 (build-only until hardware arrives)
+### EFM32G210F128 (real hardware in hand, pending bring-up verification)
 
 ```bash
 ./scripts/setup-vendor-submodules.sh
@@ -88,9 +88,12 @@ vendored Silicon Labs Gecko SDK (CMSIS + a handful of `emlib` source
 files — `em_gpio.c`, `em_cmu.c`, `em_core.c`, `em_rtc.c`, `em_emu.c`, and,
 with logging enabled, `em_usart.c` — pulled in because this part declares
 those functions non-inline; see the comments in
-`platform/efm32g210/CMakeLists.txt` for how each was confirmed necessary)
-but, like the STM32U031F8P6 target above, has not been flashed or
-validated on real silicon yet.
+`platform/efm32g210/CMakeLists.txt` for how each was confirmed necessary).
+Unlike the STM32U031F8P6 target above, real Olimex hardware for this
+backend is already in hand (see the design spec's §1) — it has not yet
+been flashed or validated on real silicon, but that's tracked as a
+concrete next step (Task 9, manual hardware bring-up verification), not
+an indefinite "until hardware arrives" wait.
 
 Pin assignments (from the board schematic, see
 `docs/superpowers/specs/2026-08-12-efm32g210-backend-design.md` §2):

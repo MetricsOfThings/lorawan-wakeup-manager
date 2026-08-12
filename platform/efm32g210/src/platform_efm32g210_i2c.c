@@ -3,14 +3,15 @@
 #include "em_cmu.h"
 #include "em_gpio.h"
 #include "em_i2c.h"
+#include "efm32g210_pins.h"
 
-/* PD6 (SDA)/PD7 (SCL) -- the same pins platform_efm32g210_gpio.c uses for
-   I2C_SDA_PORT/PIN and I2C_SCL_PORT/PIN (kept as separate local defines
-   here since those are file-static in that translation unit). */
-#define I2C_SDA_PORT gpioPortD
-#define I2C_SDA_PIN  6
-#define I2C_SCL_PORT gpioPortD
-#define I2C_SCL_PIN  7
+/* PD6 (SDA)/PD7 (SCL) -- shared with platform_efm32g210_gpio.c via
+   efm32g210_pins.h; see that header's comment for why the two files
+   must be kept in lockstep. */
+#define I2C_SDA_PORT EFM32G210_I2C_SDA_PORT
+#define I2C_SDA_PIN  EFM32G210_I2C_SDA_PIN
+#define I2C_SCL_PORT EFM32G210_I2C_SCL_PORT
+#define I2C_SCL_PIN  EFM32G210_I2C_SCL_PIN
 
 /* I2C0 ROUTE LOCATION for PD6 (SDA)/PD7 (SCL).
  *
@@ -29,6 +30,29 @@
  * efm32g210f128.h's I2C_ROUTE_LOCATION_LOC1 macro. */
 #define I2C0_ROUTE_LOCATION I2C_ROUTE_LOCATION_LOC1
 
+/* Bus speed: the design spec (§6) targets 400 kHz Fast-mode, matching
+   both other backends. In slave mode this peripheral doesn't generate
+   SCL -- the master does -- so there is no baud/timing register to set
+   here the way a master-mode driver would need. What does matter is
+   whether this slave's own sampling/digital-filter clock (I2C0's
+   peripheral clock, sourced from HFPERCLK, itself derived from HFCLK --
+   the 32 MHz HFXO per efm32g210_clock_init()) is fast enough to reliably
+   track a 400 kHz master's SCL/SDA edges. 32 MHz is 80x the 400 kHz bus
+   rate, which is comfortably oversampled by the rule-of-thumb margins
+   platform_lpc810_i2c.c's CLKDIV comment applies to its own slave (30x
+   at 12 MHz there). However, unlike that LPC810 driver's CLKDIV (an
+   explicit, documented "must be fast enough" divisor), this Series-0
+   EFM32G210 I2C peripheral's real minimum-peripheral-clock-vs-SCL-rate
+   requirement for reliable Fast-mode slave tracking is not stated
+   anywhere in the vendored em_i2c.h/efm32g210f128.h comments this task
+   had access to, and em_i2c.c's own I2C_BusFreqSet() is master-mode-only
+   (computes CLKDIV from a target SCL frequency, which this slave-mode
+   driver never calls). Rather than assert a specific margin number this
+   task cannot verify from the vendored headers alone, this is flagged
+   as an unverified hardware bring-up item: confirm actual 400 kHz
+   Fast-mode slave tracking with a scope/logic analyzer during Task 9
+   (EFM32G210 hardware bring-up verification) before assuming this
+   configuration meets the design spec's target. */
 void platform_i2c_slave_init(uint8_t addr) {
     CMU_ClockEnable(cmuClock_I2C0, true);
 
@@ -103,7 +127,19 @@ void platform_i2c_slave_init(uint8_t addr) {
        in IEN, no interrupt is ever raised and I2C0_IRQHandler never
        runs, so no byte is ever shipped to the master -- a silent read-
        side hang. Field names (I2C_IEN_ADDR, I2C_IEN_RXDATAV,
-       I2C_IEN_TXBL, I2C_IEN_SSTOP) confirmed against efm32g210f128.h. */
+       I2C_IEN_TXBL, I2C_IEN_SSTOP) confirmed against efm32g210f128.h.
+
+       TXBL is a level-sensitive status flag, not an edge/event flag: it
+       reflects "TX buffer has room" and is asserted at reset
+       (_I2C_IF_RESETVALUE has bit 4 set, confirmed in efm32g_i2c.h) and
+       is NOT clearable via IFC (_I2C_IFC_MASK excludes bit 4). That
+       means the moment NVIC_EnableIRQ(I2C0_IRQn) below runs,
+       I2C0_IRQHandler fires immediately with the bus idle -- TXBL is
+       enabled in IEN and already pending. I2C0_IRQHandler's TXBL branch
+       therefore gates on I2C0->STATE's TRANSMITTER bit before acting on
+       it, so this always-true-at-idle status flag can be safely enabled
+       here without corrupting the read-side protocol state before any
+       real master transaction has occurred. */
     I2C0->IEN = I2C_IEN_ADDR | I2C_IEN_RXDATAV | I2C_IEN_TXBL | I2C_IEN_SSTOP;
 
     NVIC_EnableIRQ(I2C0_IRQn);
@@ -134,6 +170,18 @@ void platform_wait_for_interrupt(void) {
     __WFI();
 }
 
+/* See vault/platform.h's doc comment for why these exist (closing a
+   lost-wakeup race around vault_core's WFI-based I2C wait loop). Plain
+   ARM CMSIS intrinsics -- WFI still wakes on a pending-but-masked
+   interrupt, per the ARM architecture. */
+void platform_irq_disable(void) {
+    __disable_irq();
+}
+
+void platform_irq_enable(void) {
+    __enable_irq();
+}
+
 void I2C0_IRQHandler(void) {
     uint32_t flags = I2C0->IF;
 
@@ -144,17 +192,43 @@ void I2C0_IRQHandler(void) {
        assumed. With CTRL_AUTOACK set (see platform_i2c_slave_init()),
        the hardware handles ACK/NACK generation for the address match and
        each received byte itself, so this handler only needs to react to
-       ADDR/RXDATAV/TXBL/SSTOP -- it never needs to inspect
-       I2C_STATE.TRANSMITTER or write CMD.ACK/NACK. */
+       ADDR/RXDATAV/TXBL/SSTOP -- it never needs to write CMD.ACK/NACK.
+
+       On this part, ADDR and RXDATAV assert *together* on an address
+       match, and the matched address byte is pushed into RXDATA just
+       like an ordinary received data byte -- it must be explicitly read
+       out to consume it, the same way platform_lpc810_i2c.c's
+       I2C0_IRQHandler does `(void)I2C0->SLVDAT;` on its own
+       address-match case. The ADDR branch below reads RXDATA to consume
+       that byte; the `else if` (not a separate `if`) is deliberate --
+       `flags` is a snapshot taken at entry, so without the `else` the
+       RXDATAV branch would still see RXDATAV set from that same
+       snapshot and read RXDATA a second time, consuming the *next*
+       byte (or stale/garbage data) instead of leaving it for the
+       following interrupt. On a genuine data-byte interrupt (no
+       concurrent address match), ADDR is clear and this correctly falls
+       through to the RXDATAV branch as before. */
     if (flags & I2C_IF_ADDR) {
+        (void)I2C0->RXDATA; /* consume the matched address byte */
         I2C0->IFC = I2C_IFC_ADDR;
-    }
-    if (flags & I2C_IF_RXDATAV) {
+    } else if (flags & I2C_IF_RXDATAV) {
         vault_i2c_registers_on_write_byte((uint8_t)I2C0->RXDATA);
     }
-    if (flags & I2C_IF_TXBL) {
+
+    /* TXBL is a level-sensitive "TX buffer has room" status flag that is
+       asserted even with the bus idle (see the I2C_IEN_TXBL comment in
+       platform_i2c_slave_init()) -- so it must additionally be gated on
+       I2C0->STATE's TRANSMITTER bit here, confirming the peripheral is
+       genuinely an addressed transmitter mid-transaction, before acting
+       on it. Without this gate, the always-pending-at-idle TXBL status
+       fires vault_i2c_registers_on_read_request() the moment the IRQ is
+       enabled in platform_i2c_slave_init(), before any real master read
+       has happened, corrupting the read-side register-map state on
+       every init. I2C_STATE_TRANSMITTER confirmed in efm32g_i2c.h. */
+    if ((flags & I2C_IF_TXBL) && (I2C0->STATE & I2C_STATE_TRANSMITTER)) {
         I2C0->TXDATA = vault_i2c_registers_on_read_request();
     }
+
     if (flags & I2C_IF_SSTOP) {
         I2C0->IFC = I2C_IFC_SSTOP;
         vault_i2c_registers_on_stop();

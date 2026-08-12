@@ -147,9 +147,7 @@ target_include_directories(vault_efm32g210 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     # core/include: needed starting this task for vault/platform.h
     # (platform_main_rail_enable/platform_bus_isolate declarations,
-    # included by platform_efm32g210_gpio.c). vault_core itself is still
-    # not linked -- same "headers now, link later" precedent LPC810's
-    # CMakeLists.txt set at its own equivalent GPIO task.
+    # included by platform_efm32g210_gpio.c).
     ${CMAKE_SOURCE_DIR}/core/include
 )
 

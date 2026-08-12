@@ -15,17 +15,24 @@ extern void efm32g210_gpio_init(void);
    release build an out-of-range compare value would not trip anything
    -- it would just get written into the 24-bit COMP0 register and
    silently truncated to its low 24 bits, producing a *much* shorter
-   effective wake interval than requested (e.g. a 600 s request would
-   truncate to roughly 88 s), not a build or runtime error. At the
-   32.768 kHz LFXO rate this backend runs the RTC at (see
-   efm32g210_clock_init() below -- no additional prescaler beyond the
-   CMU_LFAPRESC0 register's DIV1 reset default is applied), (2^24-1) /
-   32768 = 511 seconds is the longest interval one COMP0 match can
-   represent (0x00FFFFFFu is the 24-bit mask, i.e. 2^24-1, not 2^24 --
-   the division floors, so this is 511, not a round 512).
-   platform_wakeup_timer_arm() clamps to this instead of letting a
-   larger request silently truncate to something shorter and wrong. */
-#define RTC_MAX_SECONDS (0x00FFFFFFu / 32768u) /* 511 */
+   effective wake interval than requested, not a build or runtime error.
+
+   Rather than run the RTC at the raw 32.768 kHz LFXO rate (which would
+   cap represesentable intervals at (2^24-1) / 32768 ~= 511 seconds --
+   far short of VAULT_REG_WAKE_INTERVAL_SEC's full 4-byte range, and much
+   less than the other two backends' effective ceiling), efm32g210_clock_init()
+   below sets the LFAPRESC0 divisor to cmuClkDiv_32768, turning the RTC
+   into a genuine 1 Hz counter: COMP0 == seconds directly, no multiply,
+   and the ceiling becomes (2^24-1) seconds (~194 days) -- functionally
+   unlimited for this protocol. Confirmed cmuClkDiv_32768 is a real,
+   valid CMU_ClockDivSet() divisor for the RTC's LFAPRESC0 register
+   against the vendored em_cmu.h (RTC's divisor field width matches
+   cmuClkDiv_1 through cmuClkDiv_32768, i.e. up to divide-by-2^15). The
+   clamp below still exists as a defensive floor/ceiling on the 24-bit
+   register itself, in case something upstream ever changes the
+   prescaler, but at 1 Hz it is effectively never hit by any interval
+   this protocol can express. */
+#define RTC_MAX_SECONDS 0x00FFFFFFu /* 2^24-1, ~194 days at 1 Hz */
 
 static void efm32g210_clock_init(void) {
     /* HFXO (32 MHz, already populated on-board per the Olimex schematic)
@@ -55,18 +62,18 @@ static void efm32g210_clock_init(void) {
 
     /* cmuClock_RTC's divisor register is CMU_LFAPRESC0 -- confirmed by
        decoding cmuClock_RTC's enum value in em_cmu.h, which encodes
-       CMU_LFAPRESC0_REG as its div-register field. So this RTC *does*
-       have a prescaler between LFXO/LFA and the actual counter increment
-       rate, contrary to an assumption that LFXO feeds the counter
-       directly. However, efm32g210f128.h confirms
-       _CMU_LFAPRESC0_RESETVALUE == 0x00000000UL, i.e. DIV1 (no division)
-       out of reset, which is exactly what makes
-       platform_wakeup_timer_arm()'s `seconds * 32768u` arithmetic below
-       correct. CMU_ClockDivSet() is called explicitly here (rather than
-       leaving the prescaler at its implicit reset value) so that
-       correctness is self-documenting instead of resting on an unstated
-       assumption that nothing upstream ever touches LFAPRESC0. */
-    CMU_ClockDivSet(cmuClock_RTC, cmuClkDiv_1);
+       CMU_LFAPRESC0_REG as its div-register field. This RTC has a real
+       prescaler between LFXO/LFA and the actual counter increment rate,
+       and CMU_LFAPRESC0_RTC's field is 4 bits wide with encodings for
+       DIV1 through DIV32768 (confirmed against efm32g210f128.h:
+       _CMU_LFAPRESC0_RTC_MASK == 0xF, _CMU_LFAPRESC0_RTC_DIV32768 ==
+       0xF). Using cmuClkDiv_32768 here divides the 32.768 kHz LFXO down
+       to a genuine 1 Hz RTC counter rate, so COMP0 == seconds directly
+       (see RTC_MAX_SECONDS' comment above) -- this replaces an earlier
+       DIV1 (no division) configuration that left COMP0's 24-bit width as
+       a hard ~511-second wake-interval ceiling, silently far short of
+       VAULT_REG_WAKE_INTERVAL_SEC's full 4-byte range. */
+    CMU_ClockDivSet(cmuClock_RTC, cmuClkDiv_32768);
     CMU_ClockEnable(cmuClock_RTC, true);
 }
 
@@ -139,10 +146,27 @@ void platform_wakeup_timer_arm(uint32_t seconds) {
        a much shorter (and wrong) interval when written into the 24-bit
        COMP0 register -- see RTC_MAX_SECONDS' comment above. Clamping
        errs toward waking sooner than requested, never later, which is
-       the safe direction for a wake timer. */
+       the safe direction for a wake timer. With the RTC now running at
+       1 Hz (efm32g210_clock_init()'s cmuClkDiv_32768 prescaler), COMP0
+       == seconds directly -- no multiply needed. */
     uint32_t clamped_seconds = (seconds > RTC_MAX_SECONDS) ? RTC_MAX_SECONDS : seconds;
 
-    RTC_CompareSet(0, clamped_seconds * 32768u);
+    /* RTC_Enable(true) on an already-enabled RTC is a no-op for the
+       counter -- it only writes CTRL.EN (see em_rtc.c's RTC_Enable(),
+       BUS_RegBitWrite), it does not reset CNT. Without resetting the
+       counter here, CNT free-runs through the entire previous WAKE_MAIN
+       window (the I2C exchange with the main MCU) before this function
+       reprograms COMP0, so the actual sleep duration would silently be
+       `seconds - T_awake` instead of `seconds` from every second cycle
+       onward -- diverging from both other backends, whose wake timers
+       restart cleanly at arm time. Disabling first, then setting the new
+       compare value, then re-enabling guarantees CNT restarts from 0
+       with the new COMP0 already in place -- avoiding the alternative
+       hazard of setting COMP0 while CNT is still running from the old
+       cycle and already past the new value (which would require a full
+       24-bit wraparound to match again). */
+    RTC_Enable(false);
+    RTC_CompareSet(0, clamped_seconds);
     RTC_IntEnable(RTC_IEN_COMP0);
     RTC_Enable(true);
 }

@@ -59,17 +59,23 @@ vendored — don't guess a file that doesn't build.
 
 ## 4. File structure
 
-Mirrors `platform/stm32u031/`:
+Mirrors `platform/stm32u031/`. Updated to match the real final tree (GPIO
+ended up in its own `platform_efm32g210_gpio.c` rather than folded into
+`platform_efm32g210.c` as first sketched here, and a startup/smoke-test
+file were added during Tasks 1-2):
 
 ```
 platform/efm32g210/
   CMakeLists.txt
   linker/efm32g210f128.ld
   src/
-    main.c                       -- SystemClock/CMU init, platform_init(), main loop
-    platform_efm32g210.c         -- GPIO (main rail, bus isolate), RTC wake timer, sleep entry
-    platform_efm32g210_i2c.c     -- I2C0 slave driver
-    platform_efm32g210_uart.c    -- USART1 TX-only debug log (VAULT_LOG_ENABLED only)
+    startup_efm32g210.c          -- hand-written vector table/Reset_Handler (Task 2)
+    smoke_test_main.c            -- SDK-vendoring smoke check (Task 1)
+    main.c                       -- platform_init(), main loop
+    platform_efm32g210_gpio.c    -- GPIO: main rail enable, bus isolate (Task 3)
+    platform_efm32g210.c         -- clock init, RTC wake timer, sleep entry (Tasks 4/6)
+    platform_efm32g210_i2c.c     -- I2C0 slave driver (Task 5)
+    platform_efm32g210_uart.c    -- USART1 TX-only debug log (VAULT_LOG_ENABLED only, Task 7)
 ```
 
 ## 5. Clock and wake strategy
@@ -201,34 +207,56 @@ unconfigured, matching the TX-only pattern used on both existing backends.
 
 Consistent with this project's established practice of flagging
 unverified register-level details rather than presenting invented
-confidence:
+confidence. Updated post-implementation: five of the original six items
+below were actually resolved during Tasks 1-7; only the crystal
+load-capacitor question remains genuinely open.
 
-- Exact Gecko SDK / emlib source tree layout and file names once vendored
-  (Silicon Labs has reorganized their SDK distribution over the years;
-  confirm against whatever's actually downloaded, don't assume a specific
-  historical layout).
-- `I2C0->ROUTE` / `USART1->ROUTE` `LOCATION` field values for the
-  `PD6`/`PD7` and `PC0`/`PC1` pin pairs specifically — the board schematic
-  strongly implies these pins are valid alternate locations for these
-  peripherals, but the exact `LOCATION` index must come from the
-  reference manual's alternate-function table, not be guessed.
-- RTC `COMP0`-based wake mechanism: exact register/emlib function names,
-  and whether any additional NVIC/wake-source-enable step (like the
-  LPC810's `STARTERP1` or the STM32's EXTI-line requirement) exists for
-  RTC-triggered EM2 wake on this specific part.
-- `EMU_EnterEM2()`'s exact retention/wake behavior — confirm it genuinely
-  blocks until wake and preserves full CPU/RAM state, matching
-  `vault_core`'s resume-in-place assumption, before relying on it.
-- Whether `SysTick_Handler` needs the same explicit `HAL_IncTick()`-style
-  real implementation this project already hit as a hard bug on the
-  STM32U031 backend — if this backend uses any blocking/timeout logic
-  that depends on a system tick (emlib itself may not need one the way
-  ST's HAL does), confirm rather than assume it's fine.
-- Real load capacitor values for both on-board crystals — Olimex's own
+**Resolved:**
+
+- ~~Exact Gecko SDK / emlib source tree layout and file names once
+  vendored.~~ Resolved at Task 1: the sparse-checked-out tree layout
+  (CMSIS core, EFM32G device header, emlib inc/src, common/inc) is
+  documented in `platform/efm32g210/CMakeLists.txt`'s header comment,
+  confirmed directly against the vendored tree via `git ls-tree`/`find`.
+- ~~`I2C0->ROUTE` / `USART1->ROUTE` `LOCATION` field values for
+  `PD6`/`PD7` and `PC0`/`PC1`.~~ Resolved at Task 5 (I2C): the
+  `I2C0_ROUTE_LOCATION` comment in `platform_efm32g210_i2c.c` confirms
+  `LOCATION1` against `efm32g_af_pins.h`/`efm32g_af_ports.h` (the
+  brief's guessed `LOCATION0` was wrong -- that maps to `PA0`/`PA1`).
+  `platform_efm32g210_uart.c` resolves USART1's location similarly for
+  `PC0`/`PC1` at Task 7.
+- ~~RTC `COMP0`-based wake mechanism: exact register/emlib function
+  names, and any additional NVIC/wake-source-enable step.~~ Resolved at
+  Task 4: `platform_efm32g210.c`'s `efm32g210_rtc_init()`/
+  `platform_wakeup_timer_arm()` comments confirm `RTC_CompareSet()`,
+  `RTC_IntEnable(RTC_IEN_COMP0)`, `comp0Top`, and
+  `NVIC_EnableIRQ(RTC_IRQn)` against `em_rtc.h`/`efm32g210f128.h` -- no
+  separate STARTERP1/EXTI-style step was needed, `NVIC_EnableIRQ(RTC_IRQn)`
+  alone is sufficient on this part.
+- ~~`EMU_EnterEM2()`'s exact retention/wake behavior.~~ Resolved at
+  Task 6: `platform_efm32g210.c`'s `platform_enter_low_power_sleep()`
+  comment confirms (against the vendored `em_emu.c`) that it sets
+  `SCB->SCR`'s `SLEEPDEEP` bit, blocks on a real `__WFI()`, and returns
+  after wake with CPU/RAM state intact -- matching `vault_core`'s
+  resume-in-place assumption. It also surfaced a real bug (SLEEPDEEP
+  left set across calls, corrupting later `platform_wait_for_interrupt()`
+  sleep depth), fixed in `platform_efm32g210_i2c.c`.
+- ~~Whether `SysTick_Handler` needs a real `HAL_IncTick()`-style
+  implementation.~~ Resolved at Task 2: confirmed no emlib code path
+  reachable from this backend depends on a live SysTick interrupt (the
+  only SysTick-touching emlib code is Series-2-gated and dead on this
+  Series-0 part) -- `SysTick_Handler` stays a weak alias to
+  `Default_Handler`, unlike the STM32U031 backend, which genuinely needed
+  a real implementation.
+
+**Still open:**
+
+- Real load capacitor values for both on-board crystals -- Olimex's own
   schematic lists the populated capacitor values; confirm they're
   correctly matched to Q1/Q2's rated load capacitance before trusting
   LFXO/HFXO startup blindly, same lesson learned from the STM32 crystal
-  investigation.
+  investigation. This is a physical-inspection item for Task 9 (hardware
+  bring-up), not something resolvable from firmware/headers alone.
 
 ## 10. Out of scope
 
