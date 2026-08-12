@@ -32,7 +32,7 @@ void (* const g_pfnVectors[])(void) = {
     MemManage_Handler,
     BusFault_Handler,
     UsageFault_Handler,
-    0, 0, 0,            /* reserved */
+    0, 0, 0, 0,         /* reserved */
     SVC_Handler,
     DebugMon_Handler,
     0,                  /* reserved (sl_app_properties slot in vendor SDK; unused here) */
