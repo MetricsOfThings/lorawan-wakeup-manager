@@ -227,6 +227,13 @@ void I2C0_IRQHandler(void) {
            raises the interrupt for the first byte, as intended. */
         if (I2C0->STATE & I2C_STATE_TRANSMITTER) {
             I2C0->IEN |= I2C_IEN_TXBL;
+        } else {
+            /* A repeated START into a WRITE phase (read, then repeated
+               START, then write) re-enters this branch with TRANSMITTER
+               now clear -- without this else, TXBL would stay armed
+               from the prior read phase and storm for the whole write
+               phase, since a write never touches TXDATA to clear it. */
+            I2C0->IEN &= ~I2C_IEN_TXBL;
         }
     } else if (flags & I2C_IF_RXDATAV) {
         vault_i2c_registers_on_write_byte((uint8_t)I2C0->RXDATA);
