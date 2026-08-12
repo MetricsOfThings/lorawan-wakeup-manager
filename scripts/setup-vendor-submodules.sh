@@ -30,11 +30,19 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-echo "==> Setting up vendor/CMSIS_5 and vendor/STM32CubeU0 (plain submodules, full checkout)"
+echo "==> Setting up vendor/CMSIS_5 and vendor/STM32CubeU0 (plain submodules, full checkout, recursive)"
 # These two are small enough that a normal shallow-ish init is fine; no
 # sparse-checkout needed. --depth 1 keeps history small on first clone;
 # it's a no-op if the submodule is already initialized.
-git submodule update --init --depth 1 -- vendor/CMSIS_5 vendor/STM32CubeU0
+#
+# --recursive matters here: vendor/STM32CubeU0 has its own nested
+# submodules (Drivers/STM32U0xx_HAL_Driver, Drivers/CMSIS/Device/ST/STM32U0xx,
+# plus a few unused BSP ones), and platform/stm32u031/CMakeLists.txt compiles
+# sources directly out of the first two. Without --recursive those nested
+# dirs stay empty and the stm32u031 build fails with missing headers/sources.
+# This is safe (unlike Gecko_SDK below): CMSIS_5 and STM32CubeU0 don't carry
+# multi-gigabyte payloads in their submodule trees.
+git submodule update --init --recursive --depth 1 -- vendor/CMSIS_5 vendor/STM32CubeU0
 
 echo "==> Setting up vendor/Gecko_SDK (sparse checkout: platform/Device, platform/CMSIS, platform/emlib, platform/common)"
 #
