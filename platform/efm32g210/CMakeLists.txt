@@ -34,3 +34,75 @@ target_include_directories(vault_efm32g210_sdk_check PRIVATE
 # no other spelling accepted.
 target_compile_definitions(vault_efm32g210_sdk_check PRIVATE EFM32G210F128)
 target_compile_options(vault_efm32g210_sdk_check PRIVATE -mcpu=cortex-m3 -mthumb)
+
+# Task 2: linker script, startup file, and the real executable target.
+#
+# src/startup_efm32g210.c is a new, hand-written startup file, NOT the
+# vendored platform/Device/SiliconLabs/EFM32G/Source/GCC/startup_efm32g.S.
+# That vendored file exists and was read, but is written for the CMSIS/
+# gcc-arm-none-eabi-library startup convention (__StackTop, a
+# __copy_table_start__/__copy_table_end__ table, a
+# __zero_table_start__/__zero_table_end__ table, a .vectors section name,
+# and an indirect entry via __START/_start normally supplied by newlib
+# crt0) -- none of which match this project's simpler, linker-script-only
+# convention (_sidata/_sdata/_edata/_sbss/_ebss/_estack symbols, .isr_vector
+# section, Reset_Handler calls main() directly) shared by the LPC810 and
+# STM32U031 backends' hand-written startup files, and required by the
+# linker script given for this task (efm32g210f128.ld below). Rather than
+# rewriting that linker script to match the vendored file's conventions,
+# src/startup_efm32g210.c was written directly, following the same
+# weak-alias-to-Default_Handler pattern as platform/lpc810/src/startup_lpc810.c.
+# Its vector table content (IRQ order/names) was taken verbatim from the
+# vendored startup_efm32g.S as the authoritative source, then cross-checked
+# against this exact part's IRQn_Type enum in efm32g210f128.h -- see the
+# comments in startup_efm32g210.c for the (confirmed) gaps between the two.
+#
+# system_efm32g.c (SystemInit()/SystemCoreClock) is intentionally NOT
+# compiled into this target yet: nothing in this task's scope (this empty
+# main() and the startup file) calls SystemInit() or reads SystemCoreClock.
+# It will need to be added when clock init (Task 4) starts calling emlib
+# CMU functions that depend on it.
+#
+# SysTick_Handler: the vector table below defines it (weak alias to
+# Default_Handler, matching the other two backends), but no real handler
+# is implemented. Checked: the only SysTick-touching code in the vendored
+# emlib (platform/emlib/src/em_cmu.c, SysTick->CTRL clock-source-select
+# bit pokes) is gated to Series 2 parts (_SILICON_LABS_32B_SERIES_2_CONFIG_1)
+# and never enables the SysTick exception or busy-waits on it counting --
+# EFM32G210 is a Series 0 part, so that code path is dead here. No emlib
+# function reachable from this backend's later tasks (clock init, I2C)
+# was found to depend on a live SysTick interrupt.
+add_executable(vault_efm32g210
+    src/startup_efm32g210.c
+    src/main.c
+)
+
+target_include_directories(vault_efm32g210 PRIVATE
+    ${EFM32G210_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_definitions(vault_efm32g210 PRIVATE EFM32G210F128)
+target_compile_options(vault_efm32g210 PRIVATE -mcpu=cortex-m3 -mthumb -Os)
+target_link_options(vault_efm32g210 PRIVATE
+    -mcpu=cortex-m3 -mthumb
+    -T${CMAKE_CURRENT_SOURCE_DIR}/linker/efm32g210f128.ld
+    -Wl,-Map=vault_efm32g210.map
+)
+
+# Raw -T flag isn't tracked as a link input by CMake on its own -- same
+# fix both other backends' CMakeLists.txt needed.
+set_target_properties(vault_efm32g210 PROPERTIES
+    LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker/efm32g210f128.ld
+)
+
+# vault_core is not linked yet: platform_init() has no efm32g210
+# implementation until Task 3 onward, and main.c doesn't call into
+# vault_core yet either (see src/main.c). Matches the precedent set by
+# both other backends, which added this link only once a real caller
+# existed (LPC810: Task 9, once platform_lpc810_i2c.c needed
+# vault_i2c_registers_on_*()).
+
+add_custom_command(TARGET vault_efm32g210 POST_BUILD
+    COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_efm32g210>
+)

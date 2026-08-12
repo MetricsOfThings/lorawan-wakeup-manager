@@ -36,4 +36,8 @@ endif()
 # flash budget is tight (4 KB on LPC810).
 if(VAULT_TARGET STREQUAL "lpc810" OR VAULT_TARGET STREQUAL "stm32u031")
     target_compile_options(vault_core PRIVATE -mcpu=cortex-m0plus -mthumb -Os)
+elseif(VAULT_TARGET STREQUAL "efm32g210")
+    # EFM32G210 is a Cortex-M3 part, genuinely different core than the
+    # other two backends' Cortex-M0+.
+    target_compile_options(vault_core PRIVATE -mcpu=cortex-m3 -mthumb -Os)
 endif()
