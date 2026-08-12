@@ -1,14 +1,11 @@
 #include "vault/platform.h"
 
-extern void efm32g210_gpio_init(void);
-
-/* platform_init() starts here with just GPIO init; Tasks 4 and 7 will
-   extend it to also call clock/RTC init and, when VAULT_LOG_ENABLED,
-   UART init -- matching the pattern platform_stm32u031.c's
+/* platform_init() (GPIO + clock/RTC init) is now implemented in
+   platform_efm32g210.c (Task 4), which supersedes the placeholder that
+   used to live here calling only efm32g210_gpio_init(). Task 7 will
+   extend platform_init() further to add UART init when
+   VAULT_LOG_ENABLED, matching the pattern platform_stm32u031.c's
    platform_init() already establishes. */
-void platform_init(void) {
-    efm32g210_gpio_init();
-}
 
 /* vault_core_init()/vault_core_step() are not wired in yet: vault_core
  * is not yet linked into this target (see the CMakeLists.txt comment on

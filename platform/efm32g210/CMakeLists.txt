@@ -88,13 +88,40 @@ target_compile_options(vault_efm32g210_sdk_check PRIVATE -mcpu=cortex-m3 -mthumb
 # headers with no additional missing-header surprises (em_cmu.c's own
 # #includes -- em_syscfg.h, em_msc.h, sl_component_catalog.h, etc. --
 # were already present or conditionally compiled out for this part).
+#
+# Task 4: em_rtc.c is likewise a real emlib *source* file, not just a
+# header, for this part -- RTC_Init()/RTC_Enable()/RTC_CompareSet() are
+# declared without __STATIC_INLINE in vendor/Gecko_SDK/platform/emlib/
+# inc/em_rtc.h (only RTC_IntEnable/RTC_IntClear/RTC_CounterGet/etc. are
+# header-only inline). em_rtc.c's own #includes (em_bus.h, sl_assert.h)
+# are already satisfied by this target's existing include dirs/sources.
+#
+# Task 4 also required adding system_efm32g.c (SystemCoreClock/
+# SystemCoreClockGet()/SystemMaxCoreClockGet()), which this CMakeLists.txt
+# previously (Task 2/3) deliberately left out with a comment that nothing
+# in scope yet called into emlib CMU code depending on it. That's no
+# longer true: efm32g210_clock_init() (platform_efm32g210.c) calls
+# CMU_ClockSelectSet() and CMU_ClockDivSet(), and linking without
+# system_efm32g.c failed with "undefined reference to
+# SystemCoreClockGet"/"SystemMaxCoreClockGet" from em_cmu.c -- confirmed
+# by actually attempting the link, not assumed in advance. Note this file
+# does NOT call SystemInit() anywhere (startup_efm32g210.c's Reset_Handler
+# does not either) -- only the two clock-query functions it defines are
+# needed as link-time dependencies of em_cmu.c; SystemCoreClock itself
+# stays at this file's static-initializer default (14 MHz, the part's
+# reset HFRCO frequency) until/unless something calls SystemCoreClockGet()
+# to refresh it, which is a pre-existing gap this task did not introduce
+# and does not fix.
 add_executable(vault_efm32g210
     src/startup_efm32g210.c
     src/main.c
     src/platform_efm32g210_gpio.c
+    src/platform_efm32g210.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_gpio.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_cmu.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_core.c
+    ${GECKO_SDK_ROOT}/platform/emlib/src/em_rtc.c
+    ${GECKO_SDK_ROOT}/platform/Device/SiliconLabs/EFM32G/Source/system_efm32g.c
 )
 
 target_include_directories(vault_efm32g210 PRIVATE
