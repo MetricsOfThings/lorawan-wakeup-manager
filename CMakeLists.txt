@@ -30,6 +30,12 @@ if(NOT DEFINED VAULT_CONTEXT_SIZE)
         # Trivial against this part's 12 KB SRAM (1496 of 12288 bytes
         # used at this size, confirmed by build).
         set(VAULT_CONTEXT_SIZE 320)
+    elseif(VAULT_TARGET STREQUAL "efm32g210")
+        # Matches both other hardware backends for consistency -- same
+        # RadioLib session data should fit on any Vault variant.
+        # Trivial against this part's 16 KB SRAM (1392 of 16384 bytes
+        # used at this size, confirmed by build).
+        set(VAULT_CONTEXT_SIZE 320)
     else()
         set(VAULT_CONTEXT_SIZE 8)
     endif()

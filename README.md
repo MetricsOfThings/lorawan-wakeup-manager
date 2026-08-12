@@ -5,7 +5,7 @@ Firmware for the "Data Vault" auxiliary MCU described in
 
 ## Building
 
-This project uses CMake with three targets, selected via `-DVAULT_TARGET`:
+This project uses CMake with four targets, selected via `-DVAULT_TARGET`:
 
 ### First-time setup: vendor submodules
 
@@ -74,6 +74,40 @@ This target compiles and links against the vendored STM32Cube HAL but has
 not been flashed or validated on real silicon yet — see the design spec's
 "out of scope" section.
 
+### EFM32G210F128 (build-only until hardware arrives)
+
+```bash
+./scripts/setup-vendor-submodules.sh
+mkdir -p build/efm32g210 && cd build/efm32g210
+cmake ../.. -DVAULT_TARGET=efm32g210
+cmake --build .
+```
+
+Board: Olimex EM-32G210F128-H. This target compiles and links against the
+vendored Silicon Labs Gecko SDK (CMSIS + a handful of `emlib` source
+files — `em_gpio.c`, `em_cmu.c`, `em_core.c`, `em_rtc.c`, `em_emu.c`, and,
+with logging enabled, `em_usart.c` — pulled in because this part declares
+those functions non-inline; see the comments in
+`platform/efm32g210/CMakeLists.txt` for how each was confirmed necessary)
+but, like the STM32U031F8P6 target above, has not been flashed or
+validated on real silicon yet.
+
+Pin assignments (from the board schematic, see
+`docs/superpowers/specs/2026-08-12-efm32g210-backend-design.md` §2):
+
+| Signal | Pin | Notes |
+| --- | --- | --- |
+| `MAIN_RAIL_EN` | `PC13` | Free GPIO, broken out on `CON2` pin 4 |
+| I2C0 SDA | `PD6` | `CON1` pin 7 / `UEXT` pin 6 |
+| I2C0 SCL | `PD7` | `CON1` pin 8 / `UEXT` pin 5 |
+| Debug UART TX (USART1) | `PC0` | `CON1` pin 4 |
+| LFXO (32.768 kHz) | `PB7`/`PB8` | Already populated on-board (Q1) — RTC wake-timer clock source |
+| HFXO (32 MHz) | `PB13`/`PB14` | Already populated on-board (Q2) — main clock source |
+| `RSTN` | dedicated `#RESET` pin | `DBG` connector pin 15 / `CON2` pin 2 |
+
+Already-committed pins not repurposed by this backend: `PA0` (on-board
+status LED), `PA1` (on-board user button), `#RESET` (reset button).
+
 ## Debug logging
 
 Add `-DVAULT_LOG_ENABLED=ON` to any target's `cmake` configure step to
@@ -86,6 +120,9 @@ default.
   why. Output is on `PIO0_5`, 57600 8N1, TX-only.
 - **STM32U031F8P6:** no trade-off needed (this part has pins to spare).
   Output is on `PA2` (USART2), 57600 8N1, TX-only.
+- **EFM32G210F128:** no trade-off needed (this part also has pins to
+  spare). Output is on `PC0` (USART1), 57600 8N1, TX-only; `PC1` (RX)
+  is left unconfigured.
 - **Host:** logs to stderr, useful when debugging `vault_core` logic
   locally alongside the unit tests.
 
