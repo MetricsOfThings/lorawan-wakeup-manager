@@ -153,6 +153,23 @@ target_include_directories(vault_efm32g210 PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
 )
 
+# Task 7: platform_efm32g210_uart.c (VAULT_LOG_ENABLED-gated debug UART on
+# USART1) calls USART_InitAsync()/USART_Tx(), both declared without
+# __STATIC_INLINE in vendor/Gecko_SDK/platform/emlib/inc/em_usart.h for
+# this part -- same "real emlib source file needed, not just the header"
+# situation as em_gpio.c/em_cmu.c/em_core.c/em_rtc.c/em_emu.c above
+# (Tasks 3/4/6), confirmed the same way: those two functions' real
+# definitions live in em_usart.c, so without adding it the link fails
+# with "undefined reference to USART_InitAsync"/"USART_Tx". Only added
+# under the same VAULT_LOG_ENABLED guard as platform_efm32g210_uart.c
+# itself, since nothing else in this target calls into em_usart.h.
+if(VAULT_LOG_ENABLED)
+    target_sources(vault_efm32g210 PRIVATE
+        src/platform_efm32g210_uart.c
+        ${GECKO_SDK_ROOT}/platform/emlib/src/em_usart.c
+    )
+endif()
+
 target_compile_definitions(vault_efm32g210 PRIVATE EFM32G210F128)
 target_compile_options(vault_efm32g210 PRIVATE -mcpu=cortex-m3 -mthumb -Os)
 target_link_options(vault_efm32g210 PRIVATE

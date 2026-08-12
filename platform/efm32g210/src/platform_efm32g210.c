@@ -121,6 +121,17 @@ void platform_init(void) {
     efm32g210_gpio_init();
     efm32g210_clock_init();
     efm32g210_rtc_init();
+
+#ifdef VAULT_LOG_ENABLED
+    /* efm32g210_uart_init() (platform_efm32g210_uart.c, only compiled
+       when VAULT_LOG_ENABLED -- see CMakeLists.txt) must run after
+       efm32g210_clock_init() above, not before: its USART1 baud-rate
+       calculation reads the live HFCLK source (see the detailed
+       comment in platform_efm32g210_uart.c), which is only correct
+       once efm32g210_clock_init() has actually switched HF to HFXO. */
+    extern void efm32g210_uart_init(void);
+    efm32g210_uart_init();
+#endif
 }
 
 void platform_wakeup_timer_arm(uint32_t seconds) {
