@@ -68,6 +68,17 @@ extern "C" {
 #define LSE_STARTUP_TIMEOUT    (5000UL)     /*!< Time out for LSE start up, in ms */
 #endif /* LSE_STARTUP_TIMEOUT */
 
+#if !defined  (EXTERNAL_I2S1_CLOCK_VALUE)
+#define EXTERNAL_I2S1_CLOCK_VALUE    (48000UL) /*!< Value of the I2S1 External clock source in Hz.
+                                                     Required by stm32c0xx_hal_rcc_ex.c's
+                                                     HAL_RCCEx_GetPeriphCLKFreq() even though this
+                                                     backend has no I2S module enabled -- discovered
+                                                     as a build error in Task 2; not part of the
+                                                     module-enable trimming, just an unconditional
+                                                     compile-time dependency of the RCC_Ex source
+                                                     file itself. */
+#endif /* EXTERNAL_I2S1_CLOCK_VALUE */
+
 /* ########################### System Configuration ######################### */
 #define  VDD_VALUE                    (3300UL) /*!< Value of VDD in mv */
 #define  TICK_INT_PRIORITY            ((1UL<<__NVIC_PRIO_BITS) - 1UL) /*!< tick interrupt priority */

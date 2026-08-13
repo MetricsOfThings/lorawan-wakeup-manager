@@ -34,7 +34,7 @@ endif()
 # -Os also fixes vault_core being built at -O0 (CMake's implicit default
 # with no explicit optimization flag) on both firmware targets, where
 # flash budget is tight (4 KB on LPC810).
-if(VAULT_TARGET STREQUAL "lpc810" OR VAULT_TARGET STREQUAL "stm32u031")
+if(VAULT_TARGET STREQUAL "lpc810" OR VAULT_TARGET STREQUAL "stm32u031" OR VAULT_TARGET STREQUAL "stm32c011")
     target_compile_options(vault_core PRIVATE -mcpu=cortex-m0plus -mthumb -Os)
 elseif(VAULT_TARGET STREQUAL "efm32g210")
     # EFM32G210 is a Cortex-M3 part, genuinely different core than the
