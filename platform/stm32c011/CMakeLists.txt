@@ -31,6 +31,8 @@ set(STM32_HAL_DRIVER_SOURCES
     ${STM32CUBE_C0_ROOT}/Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_rcc_ex.c
     ${STM32CUBE_C0_ROOT}/Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_pwr.c
     ${STM32CUBE_C0_ROOT}/Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_pwr_ex.c
+    ${STM32CUBE_C0_ROOT}/Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_rtc.c
+    ${STM32CUBE_C0_ROOT}/Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_rtc_ex.c
 )
 
 # Vendored startup file: only one CMSIS Device-tree copy exists for this
