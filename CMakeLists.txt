@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT DEFINED VAULT_TARGET)
-    set(VAULT_TARGET "host" CACHE STRING "Build target: host, lpc810, stm32u031, efm32g210")
+    set(VAULT_TARGET "host" CACHE STRING "Build target: host, lpc810, stm32u031, efm32g210, stm32c011")
 endif()
 
-if(VAULT_TARGET STREQUAL "lpc810" OR VAULT_TARGET STREQUAL "stm32u031" OR VAULT_TARGET STREQUAL "efm32g210")
+if(VAULT_TARGET STREQUAL "lpc810" OR VAULT_TARGET STREQUAL "stm32u031" OR VAULT_TARGET STREQUAL "efm32g210" OR VAULT_TARGET STREQUAL "stm32c011")
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/cmake/toolchain-arm-none-eabi.cmake" CACHE FILEPATH "")
 endif()
 
@@ -36,6 +36,15 @@ if(NOT DEFINED VAULT_CONTEXT_SIZE)
         # Trivial against this part's 16 KB SRAM (1392 of 16384 bytes
         # used at this size, confirmed by build).
         set(VAULT_CONTEXT_SIZE 320)
+    elseif(VAULT_TARGET STREQUAL "stm32c011")
+        # Matches the other hardware backends for consistency -- same
+        # RadioLib session data should fit on any Vault variant. Left
+        # as a placeholder default; this backend has no full firmware
+        # target yet (Task 1 is a vendoring/smoke-test-only step), so
+        # this value hasn't been confirmed against real SRAM usage the
+        # way the other backends' comments have. STM32C011J6M6 has 6 KB
+        # SRAM total, which later tasks must budget against.
+        set(VAULT_CONTEXT_SIZE 320)
     else()
         set(VAULT_CONTEXT_SIZE 8)
     endif()
@@ -54,6 +63,8 @@ elseif(VAULT_TARGET STREQUAL "stm32u031")
     add_subdirectory(platform/stm32u031)
 elseif(VAULT_TARGET STREQUAL "efm32g210")
     add_subdirectory(platform/efm32g210)
+elseif(VAULT_TARGET STREQUAL "stm32c011")
+    add_subdirectory(platform/stm32c011)
 else()
-    message(FATAL_ERROR "Unknown VAULT_TARGET: ${VAULT_TARGET} (expected host, lpc810, stm32u031, or efm32g210)")
+    message(FATAL_ERROR "Unknown VAULT_TARGET: ${VAULT_TARGET} (expected host, lpc810, stm32u031, efm32g210, or stm32c011)")
 endif()

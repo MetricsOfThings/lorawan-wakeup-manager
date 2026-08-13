@@ -7,3 +7,6 @@
 [submodule "vendor/Gecko_SDK"]
 	path = vendor/Gecko_SDK
 	url = https://github.com/SiliconLabs/Gecko_SDK.git
+[submodule "vendor/STM32CubeC0"]
+	path = vendor/STM32CubeC0
+	url = https://github.com/STMicroelectronics/STM32CubeC0.git

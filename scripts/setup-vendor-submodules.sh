@@ -44,6 +44,21 @@ echo "==> Setting up vendor/CMSIS_5 and vendor/STM32CubeU0 (plain submodules, fu
 # multi-gigabyte payloads in their submodule trees.
 git submodule update --init --recursive --depth 1 -- vendor/CMSIS_5 vendor/STM32CubeU0
 
+echo "==> Setting up vendor/STM32CubeC0 (plain submodule, full checkout, recursive)"
+# Same pattern and same rationale as vendor/STM32CubeU0 above: a full
+# --recursive clone was measured at ~360 MB (Task 1 of the STM32C011
+# backend, see .superpowers/sdd/task-1-report.md), comparable to
+# STM32CubeU0's ~322 MB and nowhere near Gecko_SDK's multi-gigabyte
+# territory, so no sparse-checkout scoping is needed here.
+#
+# --recursive matters here too: vendor/STM32CubeC0 has its own nested
+# submodules (Drivers/STM32C0xx_HAL_Driver, Drivers/CMSIS/Device/ST/STM32C0xx,
+# plus unused BSP/Middlewares ones), and platform/stm32c011/CMakeLists.txt
+# compiles sources directly out of the first two. Without --recursive those
+# nested dirs stay empty and the stm32c011 build fails with missing
+# headers/sources.
+git submodule update --init --recursive --depth 1 -- vendor/STM32CubeC0
+
 echo "==> Setting up vendor/Gecko_SDK (sparse checkout: platform/Device, platform/CMSIS, platform/emlib, platform/common)"
 #
 # The path list below must stay in sync with the include paths documented
