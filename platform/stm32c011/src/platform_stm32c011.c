@@ -383,9 +383,9 @@ void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc) {
       forces HSI to stay running as a kernel-clock source *during STOP
       mode* ("has not effect on the HSION bit"), so in normal run mode
       (the only time this driver is active -- platform_i2c_slave_deinit()
-      already runs before platform_enter_low_power_sleep() enters Stop 2,
-      per platform_stm32u031.c's own platform_enter_low_power_sleep()
-      comment, which this part's Task 6 will mirror), HSIKER is already
+      already runs before platform_enter_low_power_sleep() enters Stop
+      mode (Task 6; this part has no STOP0/1/2 split, see that
+      function's own comment), HSIKER is already
       available the moment HSION is set -- which platform_init() already
       guarantees implicitly (HSI is the reset-default, already-running
       SYSCLK source, see platform_init()'s comment) and this function
@@ -532,4 +532,96 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
     vault_i2c_registers_on_stop();
     HAL_I2C_EnableListen_IT(hi2c);
+}
+
+/* --- Stop-mode sleep entry -- provenance and status --------------------
+   Step 1 (grepping the vendored stm32c0xx_hal_pwr*.h/.c) found this part
+   does NOT have STM32U0's HAL_PWREx_EnterSTOP0/1/2Mode() split at all --
+   STM32C0's PWR IP has a single unsplit Stop mode, entered via
+   HAL_PWR_EnterSTOPMode(uint32_t Regulator, uint8_t STOPEntry)
+   (stm32c0xx_hal_pwr.h), confirming the design spec's own speculation
+   (2026-08-13-stm32c011-backend-design.md, section 5). Two more
+   differences from STM32U031's brief, both confirmed directly in the
+   vendored header rather than assumed:
+
+   1. Regulator argument: PWR_MAINREGULATOR_ON is the ONLY value
+      IS_PWR_REGULATOR() accepts on this part (stm32c0xx_hal_pwr.h) --
+      PWR_LOWPOWERREGULATOR_ON (STM32U031's low-power-regulator choice)
+      does not exist anywhere in this family's vendored PWR headers at
+      all (grepped both stm32c0xx_hal_pwr.h and _ex.h). This part's Stop
+      mode has no separate low-power-regulator variant to opt into.
+
+   2. Pre-entry flag clear: STM32U031's platform_enter_low_power_sleep()
+      clears PWR_FLAG_WU (the WKUP-pin wakeup flag) before entering Stop,
+      because its wake source can be an external WKUP pin. This part's
+      only flag of that shape is PWR_FLAG_WUFI ("internal wakeup line"),
+      which -- per stm32c0xx_hal_pwr.h's own doc comment and the RM's PWR
+      chapter -- covers the LPTIM/COMP-style internal wakeup line, NOT
+      the RTC alarm path (RTC Alarm A wakes the core via EXTI line 19,
+      confirmed in rtc_init()'s comment, a completely separate mechanism
+      from PWR's WUFI). Neither PWR_FLAG_WUFI nor any PWR_FLAG_WUFx is
+      relevant to an RTC-Alarm-A wake source, so there is no PWR-level
+      flag to clear here; the only flag that actually needs clearing for
+      this wake path is RTC's own ALRAF, which
+      HAL_RTC_AlarmAEventCallback() (above, via platform_wakeup_timer_clear())
+      already handles on every alarm-fired wakeup, run-mode or Stop-mode
+      alike.
+
+   SLEEPDEEP handling is where this part diverges most sharply from every
+   other backend in this project. Reading HAL_PWR_EnterSTOPMode()'s
+   source directly (stm32c0xx_hal_pwr.c): it SETs SCB_SCR_SLEEPDEEP_Msk
+   before its internal __WFI()/__WFE(), exactly like STM32U031's
+   HAL_PWREx_EnterSTOP2Mode() -- but unlike STM32U031's version (and
+   unlike every other backend's Stop/EM2-equivalent entry point so far),
+   it also explicitly CLEARs SLEEPDEEP again immediately after the
+   WFI/WFE returns, before HAL_PWR_EnterSTOPMode() itself returns. So the
+   SLEEPDEEP-left-set hazard that required an explicit fix in every prior
+   backend's platform_wait_for_interrupt() does NOT reproduce here: by
+   the time platform_enter_low_power_sleep() returns, SLEEPDEEP is
+   already back to 0, guaranteed by ST's own HAL rather than by this
+   file. The CLEAR_BIT() call in platform_wait_for_interrupt() below is
+   kept anyway, purely as cheap, always-correct defense against a future
+   HAL update changing that behavior (clearing an already-clear bit is a
+   no-op) -- not because this part's HAL actually needs it today.
+
+   Clock tree on Stop exit: per platform_init()'s own comment, this part
+   never reconfigures SYSCLK away from its HSI reset default in the first
+   place (no MSI/PLL the way STM32U031's SystemClock_Config() has to
+   restore), and HAL_PWR_EnterSTOPMode()'s own doc comment
+   (stm32c0xx_hal_pwr.c, @note above) confirms "wakeup event, the HSI RC
+   oscillator is selected as system clock" on Stop exit -- i.e. Stop mode
+   exit on this part lands back on the exact same HSI-sourced SYSCLK that
+   was already running before entry. No SystemClock_Config()-equivalent
+   call is needed or exists for this backend. */
+void platform_enter_low_power_sleep(void) {
+    HAL_SuspendTick();
+    HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
+    HAL_ResumeTick();
+    /* No SystemClock_Config()-equivalent call needed -- see the comment
+       above for why Stop exit already lands back on HSI/SYSCLK
+       unchanged on this part. */
+}
+
+void platform_wait_for_interrupt(void) {
+    /* Defensive only on this part -- see platform_enter_low_power_sleep()'s
+       comment above for why HAL_PWR_EnterSTOPMode() itself already
+       clears SLEEPDEEP before returning, unlike STM32U031's
+       HAL_PWREx_EnterSTOP2Mode(). Kept for the same reason STM32U031's
+       equivalent function keeps it: cheap insurance against SLEEPDEEP
+       being left set (from this call or any future HAL change) silently
+       deepening a later plain-WFI wait into full Stop mode. */
+    CLEAR_BIT(SCB->SCR, SCB_SCR_SLEEPDEEP_Msk);
+    __WFI();
+}
+
+/* See vault/platform.h's doc comment for why these exist (closing a
+   lost-wakeup race around vault_core's WFI-based I2C wait loop). Plain
+   ARM CMSIS intrinsics -- WFI still wakes on a pending-but-masked
+   interrupt, per the ARM architecture. */
+void platform_irq_disable(void) {
+    __disable_irq();
+}
+
+void platform_irq_enable(void) {
+    __enable_irq();
 }
