@@ -119,6 +119,19 @@
 
 static RTC_HandleTypeDef s_rtc_handle;
 
+/* Sticky software latch for "Alarm A has already fired and been serviced
+   this wake cycle" -- see platform_enter_low_power_sleep()'s comment for
+   why the obvious alternative (checking the hardware ALRAF flag directly)
+   does not work: HAL_RTC_AlarmIRQHandler() clears ALRAF itself, before
+   calling HAL_RTC_AlarmAEventCallback() below, so by the time
+   platform_enter_low_power_sleep() could read it, a fire that already
+   happened looks identical to one that never happened. This flag is set
+   from inside the callback (i.e. only once the fire has actually been
+   serviced) and cleared when a fresh wake cycle is armed, so it survives
+   exactly as long as it needs to: from the moment Alarm A fires until the
+   next platform_wakeup_timer_arm() call. */
+static volatile bool s_alarm_fired;
+
 static void gpio_init(void) {
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -320,6 +333,14 @@ void platform_wakeup_timer_arm(uint32_t seconds) {
     }
 
     HAL_RTC_DeactivateAlarm(&s_rtc_handle, RTC_ALARM_A);
+    /* Clear the sticky "already fired" latch for the wake cycle being
+       armed here. Must happen only after DeactivateAlarm (above), which
+       guarantees Alarm A cannot be mid-fire or pending at this point, and
+       before HAL_RTC_SetAlarm_IT() below re-enables it -- otherwise a
+       stale s_alarm_fired=true left over from the PREVIOUS wake cycle
+       could cause platform_enter_low_power_sleep() to wrongly early-return
+       on this new cycle before the new alarm has had any chance to fire. */
+    s_alarm_fired = false;
 
     RTC_TimeTypeDef now_time = {0};
     RTC_DateTypeDef now_date = {0};
@@ -378,6 +399,12 @@ void RTC_IRQHandler(void) {
 void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc) {
     (void)hrtc;
     platform_wakeup_timer_clear();
+    /* Sticky latch: see s_alarm_fired's own comment above. Set here,
+       inside the callback HAL_RTC_AlarmIRQHandler() invokes AFTER it has
+       already cleared ALRAF, so this flag -- unlike the hardware flag --
+       reliably records "this alarm already fired and was serviced" even
+       after the ISR has fully run. */
+    s_alarm_fired = true;
 }
 
 /* --- I2C1 slave driver (HAL listen-mode) -- provenance and status ----
@@ -660,21 +687,36 @@ void platform_enter_low_power_sleep(void) {
        pattern) -- but that fix does not cover this path, since ARM_SLEEP
        is a different code path from WAKE_MAIN.
 
-       Fix: mask interrupts, then check whether ALRAF is already set
-       before committing to WFI. If it is, treat this call as an
-       immediate wake instead of blocking -- consistent with this file's
-       other timer-safety fixes (e.g. STM32C011_WAKEUP_TIMER_MAX_SECONDS'
-       clamp above) always erring toward waking sooner than requested,
-       never later: this means the requested interval can end up up to
-       one alarm-check-window shorter than asked for in the
-       already-matched case, never longer. If ALRAF is NOT already set,
-       WFI still wakes correctly on a pending-but-masked interrupt per
-       the ARM architecture (the same guarantee platform_irq_disable()'s
-       doc comment already documents) -- so masking here only closes the
-       window *before* Stop entry; it does not prevent the alarm from
-       waking the CPU if it fires during/after Stop entry itself. */
+       Fix: mask interrupts, then check whether the alarm has already
+       fired and been serviced before committing to WFI. A hardware
+       ALRAF-flag check does NOT work here, despite looking like the
+       obvious thing to test: HAL_RTC_AlarmIRQHandler() clears ALRAF
+       itself, before calling HAL_RTC_AlarmAEventCallback(), so by the
+       time this function could read it, an alarm that already fired and
+       was fully serviced looks identical (flag clear) to one that never
+       fired at all -- the flag check only catches a match whose ISR
+       hasn't run yet, a window that in practice is never open here since
+       nothing masks interrupts between platform_wakeup_timer_arm() and
+       this function. Instead, check the sticky s_alarm_fired flag (see
+       its own comment above), which HAL_RTC_AlarmAEventCallback() sets
+       only once the fire has actually been serviced and which
+       platform_wakeup_timer_arm() clears at the start of each new wake
+       cycle -- so it correctly distinguishes "already fired this cycle"
+       from "hasn't fired yet" regardless of hardware-flag timing. If it
+       is set, treat this call as an immediate wake instead of blocking --
+       consistent with this file's other timer-safety fixes (e.g.
+       STM32C011_WAKEUP_TIMER_MAX_SECONDS' clamp above) always erring
+       toward waking sooner than requested, never later: this means the
+       requested interval can end up up to one alarm-check-window shorter
+       than asked for in the already-matched case, never longer. If
+       s_alarm_fired is NOT set, WFI still wakes correctly on a
+       pending-but-masked interrupt per the ARM architecture (the same
+       guarantee platform_irq_disable()'s doc comment already documents)
+       -- so masking here only closes the window *before* Stop entry; it
+       does not prevent the alarm from waking the CPU if it fires
+       during/after Stop entry itself. */
     platform_irq_disable();
-    if (__HAL_RTC_ALARM_GET_FLAG(&s_rtc_handle, RTC_FLAG_ALRAF)) {
+    if (s_alarm_fired) {
         platform_irq_enable();
         return;
     }
