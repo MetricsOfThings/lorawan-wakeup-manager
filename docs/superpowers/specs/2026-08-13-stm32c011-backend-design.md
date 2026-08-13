@@ -26,26 +26,29 @@ read off a board. All physical STM32C011J6M6 pins:
 
 | Pin | Signal | Notes |
 |---|---|---|
-| 1 | `VDD` | |
-| 2 | `VSS` | |
-| 3 | `NRST` | Kept dedicated (not repurposed) — unlike the LPC810 backend's ISP-pin trade-off, this part has no equivalent always-available recovery mechanism to lean on if hardware reset is lost. |
-| 4 | `MAIN_RAIL_EN` | GPIO output — exact pin name (e.g. `PA4`) to be confirmed against the real STM32C011 SO8N pinout table once vendored (see §9). |
-| 5 | I2C SDA | Exact pin/AF to be confirmed against the vendored device header. |
-| 6 | I2C SCL | Exact pin/AF to be confirmed against the vendored device header. |
-| 7 | `SWDIO` | Shared with debug UART TX when `VAULT_LOG_ENABLED` — see §7. |
-| 8 | `SWCLK` | |
+| 1 | `PB7` → `MAIN_RAIL_EN` | Default `SYSCFG_CFGR3` binding for this pin — plain GPIO output, no AF/remap needed. |
+| 2 | `VDD` | |
+| 3 | `VSS` | |
+| 4 | `PF2-NRST` → `NRST` | Kept dedicated (not repurposed) — unlike the LPC810 backend's ISP-pin trade-off, this part has no equivalent always-available recovery mechanism to lean on if hardware reset is lost. |
+| 5 | `PA9` → I2C1 SCL | Reached via `SYSCFG_CFGR3` pin-binding (select `PA11` identity for this physical pin) *then* a separate `SYSCFG_CFGR1` remap (`PA11`→`PA9`). Confirmed against the real datasheet: this physical pin's only `CFGR3` alternative to its `PA8` default is `PA11`, and `PA8` itself has no I2C alternate function. |
+| 6 | `PA10` → I2C1 SDA | Always bound to `PA12` (no `CFGR3` choice for this pin) — reached via the same `SYSCFG_CFGR1` remap (`PA12`→`PA10`). |
+| 7 | `PA13` → `SWDIO` | Fixed — this pin has no `CFGR3` alternative, and (confirmed against the real datasheet) **no USART TX alternate function at all**, only `USART2_RX` — it cannot be repurposed for debug UART TX (see §7's correction). |
+| 8 | `PA14-BOOT0` → `SWCLK` | Default binding. Shared with debug UART TX (`USART2_TX`, AF1) when `VAULT_LOG_ENABLED` — see §7. Also carries `BOOT0`, sampled by the ROM bootloader independent of firmware GPIO state (see below). |
 
 No crystal pins are allocated — see §5 for why (this package has none to
 spare, and the clock strategy doesn't need one).
 
-**Open, safety-relevant question this spec cannot resolve without the
-real datasheet in hand:** whether this SO8N package exposes any way to
-force entry into ST's ROM system bootloader (normally a `BOOT0` pin
-strap) independent of what user code has done to `SWDIO`/`SWCLK` at
-runtime. This is the recovery path if a `VAULT_LOG_ENABLED` build (which
-repurposes `SWDIO`, see §7) ever needs to be reflashed and live SWD is
-unusable. Flagged for confirmation during implementation, not assumed
-resolved by this spec.
+**Resolved during implementation (was an open question at spec time):**
+this SO8N package's `PA14`/`SWCLK`/pin 8 also carries `BOOT0`
+(`PA14-BOOT0` is literally its datasheet pin name), and the datasheet's
+own "Boot modes" section confirms `BOOT0` is sampled by the ROM
+bootloader at startup, before any firmware-configured GPIO state takes
+effect. This means a hardware recovery path independent of SWD **does**
+exist on this backend: even if a `VAULT_LOG_ENABLED` build has
+repurposed `SWCLK` for UART TX and live SWD is unusable, strapping
+`BOOT0` at power-up forces boot into the system memory bootloader
+(USART1 or I2C1, per the datasheet), which can reflash the part
+regardless of what the previous firmware did to any GPIO.
 
 ## 3. Library approach
 
@@ -78,7 +81,7 @@ platform/stm32c011/
     main.c                        -- platform_init(), main loop
     platform_stm32c011.c          -- clock init, RTC wake timer, sleep entry, GPIO
     platform_stm32c011_i2c.c      -- I2C slave driver (HAL listen-mode, matching stm32u031's pattern)
-    platform_stm32c011_uart.c     -- debug UART TX on the shared SWDIO pin (VAULT_LOG_ENABLED only)
+    platform_stm32c011_uart.c     -- debug UART TX on the shared SWCLK pin (VAULT_LOG_ENABLED only)
 ```
 
 Whether `MAIN_RAIL_EN`/bus-isolation GPIO logic gets its own file (as
@@ -156,7 +159,7 @@ backend (see `vault/platform.h`'s doc comment) — this is not new design,
 just confirming this backend follows the established, already-fixed
 pattern from day one rather than needing its own later fix-round.
 
-## 7. Debug UART on the shared SWDIO pin
+## 7. Debug UART on the shared SWCLK pin
 
 USART TX-only, 57600 8N1 — matching the fixed baud rate established by
 all three other backends (`VAULT_LOG_ENABLED` gate, `vault_log()`
@@ -165,25 +168,38 @@ matching the TX-only pattern every other backend already uses.
 
 **The distinctive part of this backend:** with only 8 physical pins and
 every other signal already committed (§2), debug logging can only exist
-by repurposing `SWDIO` as USART TX. Mechanism:
+by repurposing a debug pin as USART TX. **This spec originally proposed
+`SWDIO` for this — that was wrong.** Checked against the real
+STM32C011x4/x6 datasheet (DS13866) during implementation: `PA13`
+(`SWDIO`) has no USART TX alternate function at all, only
+`USART2_RX`. The pin that actually works is `PA14` (`SWCLK`), whose
+AF1 is `USART2_TX` (AF0, the reset default, is `SWCLK` itself).
+Mechanism, corrected to the real pin:
 
 - `platform_stm32c011_uart.c`'s init function (called from
   `platform_init()`, `VAULT_LOG_ENABLED`-gated same as every other
-  backend's UART init) reconfigures the `SWDIO` pin from its default SWD
-  alternate function to the USART TX alternate function.
+  backend's UART init) reconfigures `PA14` from its default `SWCLK`
+  alternate function (AF0) to `USART2_TX` (AF1, `GPIO_AF1_USART2`).
 - From that point until the next power cycle/reset, **live SWD
-  debugging of this chip is not possible** — the debug probe cannot talk
-  to a pin now driving UART data. This is the same category of trade-off
-  the LPC810 backend already makes by sacrificing its dedicated `NRST`
-  pin for debug logging; here it costs `SWDIO` instead of `NRST`.
+  debugging of this chip is not possible** — SWD requires both
+  `SWDIO` and `SWCLK`, so losing either breaks it equally; the
+  consequence is unchanged from the original (wrong-pin) plan, just the
+  specific pin differs. This is the same category of trade-off the
+  LPC810 backend already makes by sacrificing its dedicated `NRST` pin
+  for debug logging; here it costs `SWCLK` instead of `NRST`.
 - Recovery: reflash a `VAULT_LOG_ENABLED=OFF` build (which never touches
-  `SWDIO`'s SWD function) over SWD *before* the log-enabled build's
+  `SWCLK`'s SWD function) over SWD *before* the log-enabled build's
   `platform_init()` runs — i.e. flash while the chip is freshly reset
   and still running the previous (or blank) firmware, not after the
-  log-enabled build has already reconfigured the pin. If this part's
-  ROM system bootloader is reachable independent of user-code GPIO state
-  (§2's open question), that provides a second, more robust recovery
-  path; confirm during implementation before relying on it.
+  log-enabled build has already reconfigured the pin.
+- **Second, more robust recovery path, confirmed during implementation
+  (was open at spec time):** `PA14` also carries `BOOT0`
+  (`PA14-BOOT0` is its literal datasheet pin name), sampled by the ROM
+  bootloader at power-up independent of whatever the previous firmware
+  did to the pin's GPIO/AF state. Strapping `BOOT0` forces boot into
+  the system memory bootloader (USART1 or I2C1, per the datasheet's
+  Boot modes section), which can reflash the part even if
+  `VAULT_LOG_ENABLED`'s SWCLK repurposing has made live SWD unusable.
 - A build-time note (`CMakeLists.txt`/README) must state this trade-off
   explicitly, mirroring how the LPC810 backend's own README section
   already documents its RESET-pin trade-off — a silent SWD-loss surprise
@@ -218,20 +234,25 @@ by repurposing `SWDIO` as USART TX. Mechanism:
 
 Consistent with this project's established practice of flagging
 unverified register-level details rather than presenting invented
-confidence — this backend has more open items than usual at spec time
-because there is no existing board schematic to read pin assignments
-from; they get finalized against the real vendored device header/
-datasheet during implementation, not guessed here.
+confidence. Updated post-implementation: the real STM32C011x4/x6
+datasheet (DS13866) became available mid-implementation and resolved
+every item below except where noted.
 
-- **Exact SO8N pin-to-signal map.** Which physical pin numbers correspond
-  to which GPIO names (e.g. `PA4`, `PA9`, `PA13`), and which of those
-  have I2C/USART alternate-function options — needs the real STM32C011
-  datasheet pinout table and vendored device header, not assumption.
-  `MAIN_RAIL_EN`'s GPIO choice in particular is only listed by role in
-  §2, not by real pin name, until this is resolved.
-- **BOOT0/system-bootloader accessibility on SO8N**, per §2 — determines
-  whether there's a hardware recovery path independent of §7's SWDIO
-  trade-off.
+**Resolved:**
+
+- ~~Exact SO8N pin-to-signal map.~~ Resolved against DS13866's Table 12
+  "Pin assignment and description": see §2's pin table for the real,
+  final assignment. This also caught and corrected two real errors an
+  earlier (pre-datasheet) implementation task had made using
+  provisional pins: I2C SDA/SCL were originally assigned to `PF2`/`PA8`
+  (neither has any I2C alternate function at all) before being
+  corrected to `PA9`/`PA10`; debug UART TX was originally planned for
+  `SWDIO` (`PA13`, no USART TX capability) before being corrected to
+  `SWCLK` (`PA14`, which does have one). Both are recorded in this
+  repo's `.superpowers/sdd/progress.md` ledger with the fix commits.
+- ~~BOOT0/system-bootloader accessibility on SO8N~~, per §2 — resolved
+  yes: `PA14`/`SWCLK`/pin 8 also carries `BOOT0`, confirmed sampled by
+  the ROM bootloader independent of firmware GPIO state. See §7.
 - **I2C peripheral instance and its HAL listen-mode behavior on this
   specific part.** STM32U031's I2C driver is the closest precedent, but
   confirm STM32C0's I2C peripheral generation/HAL module actually
