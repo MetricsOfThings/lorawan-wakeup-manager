@@ -74,6 +74,20 @@ set_target_properties(vault_stm32c011 PROPERTIES
 # core/CMakeLists.txt, keyed on VAULT_TARGET, rather than duplicated here.
 target_link_libraries(vault_stm32c011 PRIVATE vault_core)
 
+# VAULT_LOG_ENABLED (core/CMakeLists.txt) drives core/'s vault_log()
+# calls; this backend's implementation repurposes PA14/SWCLK as
+# USART2_TX (see src/platform_stm32c011_uart.c's file comment for the
+# datasheet correction against the design spec's original PA13/SWDIO
+# assumption), since this SO8N part's pin map is otherwise fully
+# committed (see the pin-map comment above MAIN_RAIL_EN_PORT in
+# src/platform_stm32c011.c).
+if(VAULT_LOG_ENABLED)
+    target_sources(vault_stm32c011 PRIVATE
+        src/platform_stm32c011_uart.c
+        ${STM32CUBE_C0_ROOT}/Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_uart.c
+    )
+endif()
+
 add_custom_command(TARGET vault_stm32c011 POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_stm32c011>
 )

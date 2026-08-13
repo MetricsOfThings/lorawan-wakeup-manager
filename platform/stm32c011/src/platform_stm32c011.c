@@ -189,6 +189,17 @@ void platform_init(void) {
        Task 7 (debug UART) appends its own init call here -- do not add
        speculative calls to functions that don't exist yet. */
     rtc_init();
+
+#ifdef VAULT_LOG_ENABLED
+    /* platform_stm32c011_uart.c, only compiled when VAULT_LOG_ENABLED
+       (see CMakeLists.txt). Repurposes PA14/SWCLK as USART2_TX -- NOT
+       PA13/SWDIO as the design spec and this task's original brief
+       assumed; see the file comment in platform_stm32c011_uart.c for
+       the datasheet correction. SWDIO (PA13) itself is left untouched
+       by this call. */
+    extern void stm32c011_uart_init(void);
+    stm32c011_uart_init();
+#endif
 }
 
 /* --- RTC wake timer -- provenance and status --------------------------
