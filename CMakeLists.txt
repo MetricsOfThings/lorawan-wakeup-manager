@@ -37,13 +37,10 @@ if(NOT DEFINED VAULT_CONTEXT_SIZE)
         # used at this size, confirmed by build).
         set(VAULT_CONTEXT_SIZE 320)
     elseif(VAULT_TARGET STREQUAL "stm32c011")
-        # Matches the other hardware backends for consistency -- same
-        # RadioLib session data should fit on any Vault variant. Left
-        # as a placeholder default; this backend has no full firmware
-        # target yet (Task 1 is a vendoring/smoke-test-only step), so
-        # this value hasn't been confirmed against real SRAM usage the
-        # way the other backends' comments have. STM32C011J6M6 has 6 KB
-        # SRAM total, which later tasks must budget against.
+        # Matches all three other hardware backends for consistency --
+        # same RadioLib session data should fit on any Vault variant.
+        # Trivial against this part's 6 KB SRAM, the tightest budget of
+        # any backend so far, confirmed by build.
         set(VAULT_CONTEXT_SIZE 320)
     else()
         set(VAULT_CONTEXT_SIZE 8)

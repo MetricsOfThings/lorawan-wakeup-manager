@@ -5,7 +5,7 @@ Firmware for the "Data Vault" auxiliary MCU described in
 
 ## Building
 
-This project uses CMake with four targets, selected via `-DVAULT_TARGET`:
+This project uses CMake with five targets, selected via `-DVAULT_TARGET`:
 
 ### First-time setup: vendor submodules
 
@@ -111,6 +111,55 @@ Pin assignments (from the board schematic, see
 Already-committed pins not repurposed by this backend: `PA0` (on-board
 status LED), `PA1` (on-board user button), `#RESET` (reset button).
 
+### STM32C011J6M6 (build-only — no board exists for this target)
+
+```bash
+./scripts/setup-vendor-submodules.sh
+mkdir -p build/stm32c011 && cd build/stm32c011
+cmake ../.. -DVAULT_TARGET=stm32c011
+cmake --build .
+```
+
+This target compiles and links against the vendored STM32Cube C0 HAL. No
+board schematic exists for this part — unlike the other three hardware
+backends, the pin table below is assigned here, not read off a board, and
+has not been flashed or validated on real silicon.
+
+STM32C011J6M6 is an 8-pin SO8N package (32 KB flash / 6 KB SRAM), so
+every pin is already committed — there are no pins to spare. Pin
+assignments (from
+`docs/superpowers/specs/2026-08-13-stm32c011-backend-design.md` §2,
+confirmed against the real STM32C011x4/x6 datasheet, DS13866):
+
+| Pin | Signal | Notes |
+| --- | --- | --- |
+| 1 | `PB7` → `MAIN_RAIL_EN` | Default `SYSCFG_CFGR3` binding — plain GPIO output, no remap needed. |
+| 2 | `VDD` | |
+| 3 | `VSS` | |
+| 4 | `PF2-NRST` → `NRST` | Kept dedicated — this part has no LPC810-style always-available recovery pin to fall back on if hardware reset is lost. |
+| 5 | `PA9` → I2C1 SCL | Via `SYSCFG_CFGR3` pin-binding (`PA11` identity for this physical pin), then a separate `SYSCFG_CFGR1` remap (`PA11`→`PA9`). |
+| 6 | `PA10` → I2C1 SDA | Via `SYSCFG_CFGR1` remap (`PA12`→`PA10`) only — this pin has no `CFGR3` alternative. |
+| 7 | `PA13` → `SWDIO` | Fixed, no alternative binding. **Has no USART TX alternate function at all** (only `USART2_RX`) — cannot be repurposed for debug logging. |
+| 8 | `PA14-BOOT0` → `SWCLK` | Default binding. Repurposed as `USART2_TX` (AF1) when `VAULT_LOG_ENABLED` — see "Debug logging" below. Also carries `BOOT0`, a hardware recovery path independent of SWD (see below). |
+
+**Debug-logging trade-off (read before flashing a `VAULT_LOG_ENABLED`
+build):** with every pin already committed, this backend can only get
+debug UART by repurposing `SWCLK` (pin 8) as `USART2_TX`. From the
+moment `platform_init()` runs in such a build, **live SWD debugging of
+this chip is impossible** — SWD needs both `SWDIO` and `SWCLK`, and this
+build has reassigned the latter to UART TX. This is the same category of
+trade-off the LPC810 section above documents for its dedicated `RESET`
+pin, just costing `SWCLK` here instead. Two recovery paths if you get
+stuck:
+
+1. Reflash a `VAULT_LOG_ENABLED=OFF` build over SWD immediately after a
+   power cycle/reset, before the log-enabled firmware's `platform_init()`
+   has a chance to run and reclaim the pin.
+2. Strap `BOOT0` (also carried on pin 8, `PA14-BOOT0`) at power-up to
+   force the ROM bootloader (USART1 or I2C1) regardless of what the
+   previous firmware did to the pin's GPIO/AF state — this works even if
+   SWD is fully unusable.
+
 ## Debug logging
 
 Add `-DVAULT_LOG_ENABLED=ON` to any target's `cmake` configure step to
@@ -126,6 +175,13 @@ default.
 - **EFM32G210F128:** no trade-off needed (this part also has pins to
   spare). Output is on `PC0` (USART1), 57600 8N1, TX-only; `PC1` (RX)
   is left unconfigured.
+- **STM32C011J6M6:** repurposes the `SWCLK` pin (not `SWDIO`) as
+  `USART2_TX`, 57600 8N1, TX-only — **this makes live SWD debugging
+  unavailable for the lifetime of the running build**. See the
+  "Debug-logging trade-off" note under the STM32C011J6M6 build section
+  above for the mechanism and the two recovery paths (reflash a
+  logging-disabled build before `platform_init()` runs, or strap
+  `BOOT0`, also carried on this pin, to force the ROM bootloader).
 - **Host:** logs to stderr, useful when debugging `vault_core` logic
   locally alongside the unit tests.
 
@@ -138,7 +194,7 @@ build directory after `cmake --build .`. `verify reset exit` flashes,
 verifies against flash, resets the MCU into the new firmware, and exits
 OpenOCD.
 
-All three probes below assume a standard 10-pin/20-pin ARM SWD connection
+All probes below assume a standard 10-pin/20-pin ARM SWD connection
 (`SWDIO`/`SWCLK`/`GND`/`VTref`, `RESET` optional but recommended).
 
 ### LPC810
@@ -197,6 +253,32 @@ openocd -f interface/cmsis-dap.cfg -f target/efm32.cfg -c "adapter speed 400" \
   memory at 0x400c0020`, then every subsequent memory access fails too).
   Confirmed on real hardware: dropping to 400 kHz fixed it. If 400 still
   fails, try lower (e.g. 100) before suspecting a hardware/wiring fault.
+
+### STM32C011J6M6
+
+```bash
+openocd -f interface/stlink-dap.cfg -f target/stm32c0x.cfg \
+  -c "program platform/stm32c011/vault_stm32c011 verify reset exit"
+```
+
+- **Stock OpenOCD 0.12.0 (the Homebrew package) does not ship
+  `target/stm32c0x.cfg`** — confirmed by checking the installed package's
+  `scripts/target/` directory (`find $(brew --prefix openocd)/share/openocd/scripts/target -iname 'stm32c0*.cfg'` — no match; `stm32g0x.cfg` is the
+  nearest sibling family present, but that is a different chip family and
+  not a substitute). This is the same gap the STM32U031F8P6 section above
+  documents for `target/stm32u0x.cfg`. Use either:
+  - ST's own OpenOCD build and scripts, bundled with STM32CubeIDE (see
+    the STM32U031F8P6 section above for the macOS path), or
+  - a mainline OpenOCD built from a recent enough source/nightly that
+    includes `target/stm32c0x.cfg`.
+- This target has no board and has not been flashed on real silicon yet
+  (see the build section above) — treat the command as untested.
+- Flash is mapped at `0x08000000`
+  (`platform/stm32c011/linker/stm32c011j6.ld`).
+- If SWD debugging becomes unresponsive on a `VAULT_LOG_ENABLED` build,
+  see the "Debug-logging trade-off" note in the build section above
+  before assuming a wiring fault — `SWCLK` may simply be running as
+  UART TX.
 
 ## Adding a new STM32 family backend later
 
