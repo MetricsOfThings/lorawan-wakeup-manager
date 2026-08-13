@@ -54,8 +54,9 @@ echo "==> Setting up vendor/STM32CubeC0 (plain submodule, full checkout, recursi
 # --recursive matters here too: vendor/STM32CubeC0 has its own nested
 # submodules (Drivers/STM32C0xx_HAL_Driver, Drivers/CMSIS/Device/ST/STM32C0xx,
 # plus unused BSP/Middlewares ones), and platform/stm32c011/CMakeLists.txt
-# compiles sources directly out of the first two. Without --recursive those
-# nested dirs stay empty and the stm32c011 build fails with missing
+# includes headers out of the first two (Task 1's smoke-test target; later
+# tasks compile sources from them too). Without --recursive those nested
+# dirs stay empty and the stm32c011 build fails with missing
 # headers/sources.
 git submodule update --init --recursive --depth 1 -- vendor/STM32CubeC0
 
