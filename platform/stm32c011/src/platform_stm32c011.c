@@ -17,12 +17,6 @@
      Physical pin 5 -> PA8  (default; PA11 is the alternate)
      Physical pin 8 -> PA14 (default; PB6/PC15 are alternates)
 
-   This file deliberately uses ONLY the reset-default bindings above,
-   so it needs zero HAL_SYSCFG_SetPinBinding() calls -- no runtime
-   pin remapping means nothing to get wrong at boot on an 8-pin part
-   where a wrong guess could short two signals together on real
-   hardware.
-
    Physical pins 2/3/6/7 are NOT in the SYSCFG_CFGR3 binding table --
    Task 1 inferred (but did NOT independently confirm from a datasheet)
    that these are fixed VDD/VSS/NRST/SWDIO, consistent with an 8-pin
@@ -30,29 +24,81 @@
    PA13/SWDIO is NOT yet confirmed against a datasheet -- Task 7 (debug
    UART, which repurposes SWDIO for UART TX) MUST verify this itself
    before relying on it; do not silently inherit this assumption.
+   NRST (physical pin 4, PF2-NRST default), SWDIO (PA13, physical
+   pin 7) and SWCLK (PA14-BOOT0 default, physical pin 8) are otherwise
+   untouched by this fix.
+
+   *** CORRECTED against the real STM32C011x4/x6 datasheet (DS13866) ***
+   Task 1/an earlier pass on this file picked PF2 (physical pin 4) for
+   I2C SDA and PA8 (physical pin 5, its SYSCFG_CFGR3 default binding)
+   for I2C SCL, flagged PROVISIONAL pending a real datasheet check.
+   That check (DS13866 Table 12 "Pin assignment and description" plus
+   its alternate-function tables) now shows NEITHER pin actually
+   carries an I2C1 alternate function: PF2's only AFs are MCO and
+   TIM1_CH4; PA8's are MCO/USART2_TX/TIM1_CH1/etc. Both guesses were
+   wrong and would not have worked on real silicon.
+
+   The datasheet's own bootloader section corroborates the correct
+   pair independently, stating the I2C bootloader runs "I2C-bus on
+   pins PB6/PB7" for parts that expose them directly -- but on THIS
+   SO8N package PB6/PB7 aren't both free (PB7 is needed for
+   MAIN_RAIL_EN below, and PB6 isn't broken out on physical pin 5/6 at
+   all), so this part's I2C1 has to be reached via a different, less
+   obvious route: physical pins 5 and 6 combine TWO independent SYSCFG
+   mechanisms to reach PA9/PA10 (the pins that actually carry
+   I2C1_SCL/I2C1_SDA, AF6, per DS13866's AF table):
+
+     1. SYSCFG_CFGR3 "SO8N pin binding" (HAL_SYSCFG_SetPinBinding(),
+        same mechanism as the reset-default bindings above): physical
+        pin 5 defaults to PA8, but can instead be bound to PA11 via
+        HAL_BIND_SO8_PIN5_PA11 (confirmed in the vendored
+        stm32c0xx_hal.h / stm32c0xx_ll_system.h). Physical pin 6 has
+        no SYSCFG_CFGR3 choice at all -- it is always bonded as PA12.
+
+     2. SYSCFG_CFGR1's separate "PA9/PA10 remapped in place of
+        PA11/PA12" mechanism -- a DIFFERENT register from CFGR3, not
+        used anywhere else in this codebase. Confirmed in the vendored
+        headers: SYSCFG_CFGR1_PA11_RMP / SYSCFG_CFGR1_PA12_RMP bits in
+        stm32c011xx.h, exposed via HAL_SYSCFG_EnableRemap(uint32_t
+        PinRemap) (stm32c0xx_hal.h, implemented on top of
+        LL_SYSCFG_EnablePinRemap() in stm32c0xx_ll_system.h) taking
+        SYSCFG_REMAP_PA11 / SYSCFG_REMAP_PA12 (stm32c0xx_hal.h's own
+        comments: "PA11 pad behaves digitally as PA9 GPIO pin" /
+        "PA12 pad behaves digitally as PA10 GPIO pin" -- i.e. once
+        bound to PA11/PA12 by CFGR3, CFGR1's remap bit makes that same
+        pad present PA9's / PA10's alternate-function identity,
+        including PA9's/PA10's I2C1 AF6).
+
+   Applying both to this part's two I2C pins:
+     Physical pin 5: CFGR3 bound to PA11 (HAL_BIND_SO8_PIN5_PA11) +
+       CFGR1 SYSCFG_REMAP_PA11 -> presents as PA9 -> I2C1_SCL (AF6).
+     Physical pin 6: always PA12 (no CFGR3 choice needed) + CFGR1
+       SYSCFG_REMAP_PA12 -> presents as PA10 -> I2C1_SDA (AF6).
+   Do not swap these: DS13866's AF table lists I2C1_SCL under PA9 and
+   I2C1_SDA under PA10 specifically -- SCL/SDA are not interchangeable
+   just because both remap through the same CFGR1 mechanism.
+
+   Both SYSCFG calls are made once, early, in gpio_init() (see below),
+   since they must be in effect before I2C peripheral init (Task 5)
+   configures these pins' alternate function.
 
    Concrete pin decision made here:
      MAIN_RAIL_EN = PB7  (physical pin 1, default binding). CONFIRMED
-       SAFE for this task: a plain GPIO output needs no
-       alternate-function capability, so this assignment does not
-       depend on the still-open AF-capability question below.
-     I2C SDA = PF2  (physical pin 4, default binding) -- PROVISIONAL.
-       Task 5 (I2C driver) must independently confirm PF2 actually
-       supports I2C1's alternate function in the vendored
-       stm32c0xx_hal_gpio_ex.h before treating this as final. It is
-       only used here for platform_bus_isolate()'s GPIO_MODE_ANALOG
-       reconfiguration, which -- like the GPIO output above -- needs no
-       AF capability either, so this pin name is safe to use for that
-       purpose regardless of how the AF question resolves.
-     I2C SCL = PA8  (physical pin 5, default binding) -- same
-       PROVISIONAL status and same reasoning as I2C SDA above.
+       SAFE: a plain GPIO output needs no alternate-function
+       capability or SYSCFG remap, so this assignment never depended
+       on the I2C AF question above.
+     I2C SCL = PA9  (physical pin 5, remapped via SYSCFG_CFGR3 +
+       SYSCFG_CFGR1 as described above). CONFIRMED against DS13866.
+     I2C SDA = PA10 (physical pin 6, remapped via SYSCFG_CFGR1 alone,
+       since pin 6 has no CFGR3 binding choice). CONFIRMED against
+       DS13866.
    ----------------------------------------------------------------- */
 #define MAIN_RAIL_EN_PORT GPIOB
 #define MAIN_RAIL_EN_PIN  GPIO_PIN_7
-#define I2C_SDA_PORT      GPIOF
-#define I2C_SDA_PIN       GPIO_PIN_2
+#define I2C_SDA_PORT      GPIOA
+#define I2C_SDA_PIN       GPIO_PIN_10
 #define I2C_SCL_PORT      GPIOA
-#define I2C_SCL_PIN       GPIO_PIN_8
+#define I2C_SCL_PIN       GPIO_PIN_9
 
 /* platform_wakeup_timer_arm() below implements "fire in `seconds` seconds"
    as a date-masked Alarm A match on hh:mm:ss (see that function's comment
@@ -73,6 +119,21 @@ static RTC_HandleTypeDef s_rtc_handle;
 static void gpio_init(void) {
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
+    /* Bind physical pin 5 to PA11 and physical pin 6 (always PA12) to
+       PA10's remapped identity, then remap both through SYSCFG_CFGR1 so
+       they present as PA9/PA10 -- the pins that actually carry I2C1's
+       alternate function (AF6) per DS13866. See the pin-map comment
+       above MAIN_RAIL_EN_PORT for the full derivation. This must run
+       before anything below (or later, Task 5's I2C peripheral init)
+       configures I2C_SCL_PORT/I2C_SDA_PORT's alternate function, since
+       the pad doesn't present PA9/PA10's identity -- and therefore
+       doesn't accept AF6 -- until these SYSCFG bits are set. SYSCFG's
+       own clock must be enabled first, or CFGR1/CFGR3 writes are
+       ignored. */
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    HAL_SYSCFG_SetPinBinding(HAL_BIND_SO8_PIN5_PA11);
+    HAL_SYSCFG_EnableRemap(SYSCFG_REMAP_PA11 | SYSCFG_REMAP_PA12);
+
     GPIO_InitTypeDef gpio_init = {0};
     gpio_init.Pin = MAIN_RAIL_EN_PIN;
     gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
@@ -89,12 +150,12 @@ void platform_main_rail_enable(bool on) {
 void platform_bus_isolate(void) {
     /* Analog, no pull -- same parasitic-back-powering mitigation every
        other backend's platform_bus_isolate() already applies (design
-       spec, MCU_Analysis_Report.md section 5). SDA (PF2) and SCL (PA8)
-       are on different ports here (unlike other backends, since this
-       part's SO8N pinout is software-selectable rather than a fixed
-       table -- see the pin-map comment above), so each port needs its
-       own clock enable and its own HAL_GPIO_Init() call. */
-    __HAL_RCC_GPIOF_CLK_ENABLE();
+       spec, MCU_Analysis_Report.md section 5). SDA (PA10) and SCL
+       (PA9) are both on GPIOA here (see the pin-map comment above
+       MAIN_RAIL_EN_PORT for how physical pins 5/6 reach these via
+       SYSCFG_CFGR3 pin binding + SYSCFG_CFGR1 remap), so a single
+       clock enable and two HAL_GPIO_Init() calls (one per pin) cover
+       both. */
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio_init = {0};
