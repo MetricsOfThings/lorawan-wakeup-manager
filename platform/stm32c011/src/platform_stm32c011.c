@@ -1,4 +1,5 @@
 #include "vault/platform.h"
+#include "vault/vault_i2c_registers.h"
 #include "stm32c0xx_hal.h"
 
 /* --- SO8N pin map for STM32C011J6M6 -- provenance and status ---------
@@ -340,4 +341,195 @@ void RTC_IRQHandler(void) {
 void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc) {
     (void)hrtc;
     platform_wakeup_timer_clear();
+}
+
+/* --- I2C1 slave driver (HAL listen-mode) -- provenance and status ----
+   Follows platform_stm32u031.c's i2c_pins_init()/i2c1_clock_source_init()/
+   platform_i2c_slave_init()/I2C1_IRQHandler()/HAL_I2C_*Callback() shape
+   directly (same HAL module family, same listen-mode API surface), but
+   every part-specific constant below was re-derived against this part's
+   real vendored headers rather than copied from STM32U031:
+
+   1. Pins/AF: I2C_SCL_PIN/I2C_SCL_PORT and I2C_SDA_PIN/I2C_SDA_PORT
+      (PA9/PA10) and the SYSCFG_CFGR3/CFGR1 remap that makes them live are
+      already established above (see the pin-map comment near
+      MAIN_RAIL_EN_PORT) and already run in gpio_init(), which platform_init()
+      calls before rtc_init()/anything here. GPIO_AF6_I2C1 (0x06) is
+      confirmed directly in the vendored stm32c0xx_hal_gpio_ex.h -- this
+      happens to be the same AF number STM32U031's brief guessed for its
+      own part (AF6), but that was NOT assumed here; DS13866's own AF
+      table (see the pin-map comment) already independently confirmed AF6
+      for PA9/PA10 on this device.
+
+   2. Peripheral instance/IRQ: I2C1 is this part's only I2C instance
+      (I2C1_BASE / I2C1 confirmed in stm32c011xx.h). Its NVIC line,
+      I2C1_IRQn = 23 ("I2C1 Interrupt (combined with EXTI 23)" per
+      stm32c011xx.h's IRQn_Type enum), is -- like STM32U031's I2C1_IRQn --
+      a single combined line for both event and error interrupts; both
+      HAL sub-handlers are serviced from one ISR below, same as
+      STM32U031's I2C1_IRQHandler().
+
+   3. Kernel clock source: this is a REAL divergence from STM32U031's HAL,
+      not just a renamed constant. STM32C0's RCC_PeriphCLKInitTypeDef
+      (stm32c0xx_hal_rcc_ex.h) offers only RCC_I2C1CLKSOURCE_PCLK1,
+      RCC_I2C1CLKSOURCE_SYSCLK, or RCC_I2C1CLKSOURCE_HSIKER for I2c1ClockSelection
+      -- there is no RCC_I2C1CLKSOURCE_HSI on this part (the brief's
+      illustrative code, copied from STM32U031's own constant name, does
+      not compile here). "HSIKER" is a second, independent output of the
+      same HSI oscillator (distinct from HSISYS, the divided output that
+      feeds the CPU/AHB/APB tree) intended specifically for kernel
+      peripherals like I2C/USART -- see stm32c0xx_hal_rcc.h's
+      __HAL_RCC_HSISTOP_ENABLE()/RCC_CR_HSIKERON comment: HSIKERON only
+      forces HSI to stay running as a kernel-clock source *during STOP
+      mode* ("has not effect on the HSION bit"), so in normal run mode
+      (the only time this driver is active -- platform_i2c_slave_deinit()
+      already runs before platform_enter_low_power_sleep() enters Stop 2,
+      per platform_stm32u031.c's own platform_enter_low_power_sleep()
+      comment, which this part's Task 6 will mirror), HSIKER is already
+      available the moment HSION is set -- which platform_init() already
+      guarantees implicitly (HSI is the reset-default, already-running
+      SYSCLK source, see platform_init()'s comment) and this function
+      re-confirms explicitly/defensively exactly as STM32U031's
+      i2c1_clock_source_init() does. HSIKER's divider (RCC_CR_HSIKERDIV,
+      configured via a *separate* RCC_PERIPHCLK_HSIKER selector this
+      driver does not set) resets to RCC_HSIKER_DIV1 (divide-by-1,
+      confirmed 0x0 in stm32c0xx_hal_rcc_ex.h), so HSIKER runs at the full,
+      undivided HSI_VALUE (48 MHz, confirmed in
+      platform/stm32c011/include/stm32c0xx_hal_conf.h) without this driver
+      needing to touch RCC_PERIPHCLK_HSIKER/HSIKerClockDivider at all.
+
+   4. TIMING: STM32U031's 0x30200306 assumed a 16 MHz I2C kernel clock
+      (t_I2CCLK = 62.5 ns) and picked PRESC=3 (t_PRESC = (PRESC+1) x
+      t_I2CCLK = 250 ns) so that SCLDEL=2, SDADEL=0, SCLH=3, SCLL=6 give
+      t_SCLH=1000 ns / t_SCLL=1750 ns (~348 kHz actual SCL, safely under
+      400 kHz Fast-mode). This part's I2C1 kernel clock is HSIKER at
+      48 MHz (t_I2CCLK = 20.833 ns, 3x faster than STM32U031's 16 MHz),
+      so reusing PRESC=3 would make t_PRESC three times too short and
+      overshoot 400 kHz. Scaling PRESC to hold t_PRESC constant at 250 ns
+      instead: (PRESC+1) = 250 ns / 20.833 ns = 12, so PRESC=11 (0xB, vs.
+      STM32U031's 3) -- keeping SCLDEL/SDADEL/SCLH/SCLL identical to
+      STM32U031's values reproduces the exact same t_SCLH/t_SCLL/t_SCL
+      (~348 kHz) on this part's faster clock. This gives
+      TIMING = 0xB0200306 (only the top PRESC nibble changed from
+      STM32U031's 0x3 to 0xB; SCLDEL/SDADEL/SCLH/SCLL are unchanged).
+      Same caveat STM32U031's file already documents: this is a hand
+      derivation from ST's TIMINGR formula assuming a small, unmeasured
+      SYNC1+SYNC2 analog-filter delay -- re-derive/confirm with CubeMX's
+      timing calculator or a scope before flashing.
+   ----------------------------------------------------------------- */
+
+static I2C_HandleTypeDef s_i2c_handle;
+
+static void i2c_pins_init(void) {
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitTypeDef gpio_init = {0};
+    gpio_init.Pin = I2C_SDA_PIN | I2C_SCL_PIN;
+    gpio_init.Mode = GPIO_MODE_AF_OD;
+    gpio_init.Pull = GPIO_NOPULL;
+    /* GPIO_AF6_I2C1 -- confirmed against the vendored device header
+       (stm32c0xx_hal_gpio_ex.h) and against DS13866's own AF table for
+       PA9/PA10 (see the pin-map comment above MAIN_RAIL_EN_PORT). The
+       SYSCFG_CFGR3 pin-binding + SYSCFG_CFGR1 remap that makes physical
+       pins 5/6 present as PA9/PA10 in the first place already ran in
+       gpio_init(), before platform_i2c_slave_init() (and therefore this
+       function) runs. */
+    gpio_init.Alternate = GPIO_AF6_I2C1;
+    HAL_GPIO_Init(I2C_SDA_PORT, &gpio_init);
+}
+
+static void i2c1_clock_source_init(void) {
+    /* Defensive/explicit, mirroring platform_stm32u031.c's
+       i2c1_clock_source_init() -- HSI (and therefore HSIKER, see the
+       provenance comment above) is already the running, stable,
+       reset-default system clock by the time this runs (platform_init()'s
+       own comment), so this spin-wait is not expected to ever actually
+       block, but costs nothing to keep as a safety net against a future
+       change to platform_init()'s clock setup. */
+    __HAL_RCC_HSI_ENABLE();
+    while (!__HAL_RCC_GET_FLAG(RCC_FLAG_HSIRDY)) {
+        /* Busy-wait for HSI to stabilize. */
+    }
+
+    RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
+    periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
+    /* RCC_I2C1CLKSOURCE_HSIKER, not STM32U031's RCC_I2C1CLKSOURCE_HSI --
+       this part's I2C1 kernel clock source enum only offers PCLK1,
+       SYSCLK, or HSIKER (confirmed in stm32c0xx_hal_rcc_ex.h); see the
+       provenance comment above for what HSIKER actually is on this
+       family. */
+    periph_clk_init.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSIKER;
+    HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
+}
+
+void platform_i2c_slave_init(uint8_t addr) {
+    i2c1_clock_source_init();
+    __HAL_RCC_I2C1_CLK_ENABLE();
+    i2c_pins_init();
+
+    s_i2c_handle.Instance = I2C1;
+    /* Fast-mode (400 kHz) TIMING value re-derived for this part's 48 MHz
+       HSIKER I2C1 kernel clock -- see the provenance comment above this
+       section for the full PRESC re-derivation from STM32U031's 16 MHz
+       constant. */
+    s_i2c_handle.Init.Timing = 0xB0200306;
+    s_i2c_handle.Init.OwnAddress1 = (uint32_t)(addr << 1);
+    s_i2c_handle.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+    s_i2c_handle.Init.OwnAddress2 = 0;
+    s_i2c_handle.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+    s_i2c_handle.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    s_i2c_handle.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+    HAL_I2C_Init(&s_i2c_handle);
+
+    /* I2C1_IRQn = 23 is this family's single combined event+error NVIC
+       line for I2C1 (confirmed in stm32c011xx.h's IRQn_Type enum) -- same
+       topology as STM32U031's I2C1_IRQn, unlike STM32 families that split
+       I2Cx_EV/I2Cx_ER onto separate lines. */
+    HAL_NVIC_SetPriority(I2C1_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(I2C1_IRQn);
+
+    HAL_I2C_EnableListen_IT(&s_i2c_handle);
+}
+
+void platform_i2c_slave_deinit(void) {
+    HAL_NVIC_DisableIRQ(I2C1_IRQn);
+    HAL_I2C_DisableListen_IT(&s_i2c_handle);
+    HAL_I2C_DeInit(&s_i2c_handle);
+    __HAL_RCC_I2C1_CLK_DISABLE();
+}
+
+void I2C1_IRQHandler(void) {
+    /* Single combined event+error NVIC line -- see platform_i2c_slave_init()'s
+       comment above. Both HAL sub-handlers must be serviced from this one
+       ISR or NACK/bus-error conditions raised while listen mode is
+       enabled would never be handled. */
+    HAL_I2C_EV_IRQHandler(&s_i2c_handle);
+    HAL_I2C_ER_IRQHandler(&s_i2c_handle);
+}
+
+static uint8_t s_rx_byte;
+static uint8_t s_tx_byte;
+
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t direction, uint16_t addr_match_code) {
+    (void)addr_match_code;
+    if (direction == I2C_DIRECTION_TRANSMIT) {
+        HAL_I2C_Slave_Seq_Receive_IT(hi2c, &s_rx_byte, 1, I2C_NEXT_FRAME);
+    } else {
+        s_tx_byte = vault_i2c_registers_on_read_request();
+        HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &s_tx_byte, 1, I2C_NEXT_FRAME);
+    }
+}
+
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
+    vault_i2c_registers_on_write_byte(s_rx_byte);
+    HAL_I2C_Slave_Seq_Receive_IT(hi2c, &s_rx_byte, 1, I2C_NEXT_FRAME);
+}
+
+void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
+    s_tx_byte = vault_i2c_registers_on_read_request();
+    HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &s_tx_byte, 1, I2C_NEXT_FRAME);
+}
+
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
+    vault_i2c_registers_on_stop();
+    HAL_I2C_EnableListen_IT(hi2c);
 }
