@@ -43,6 +43,7 @@ add_executable(vault_stm32c011
     ${STM32CUBE_C0_ROOT}/Drivers/CMSIS/Device/ST/STM32C0xx/Source/Templates/system_stm32c0xx.c
     ${STM32_HAL_DRIVER_SOURCES}
     src/main.c
+    src/platform_stm32c011.c
     src/libc_stubs.c
 )
 
