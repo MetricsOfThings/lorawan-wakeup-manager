@@ -21,13 +21,15 @@
    Physical pins 2/3/6/7 are NOT in the SYSCFG_CFGR3 binding table --
    Task 1 inferred (but did NOT independently confirm from a datasheet)
    that these are fixed VDD/VSS/NRST/SWDIO, consistent with an 8-pin
-   power+debug+minimal-GPIO part. In particular, pin 7's identity as
-   PA13/SWDIO is NOT yet confirmed against a datasheet -- Task 7 (debug
-   UART, which repurposes SWDIO for UART TX) MUST verify this itself
-   before relying on it; do not silently inherit this assumption.
-   NRST (physical pin 4, PF2-NRST default), SWDIO (PA13, physical
-   pin 7) and SWCLK (PA14-BOOT0 default, physical pin 8) are otherwise
-   untouched by this fix.
+   power+debug+minimal-GPIO part. Pin 7's identity as PA13/SWDIO was
+   left unconfirmed here, but Task 7 (debug UART) has since verified
+   the actual debug-pin usage against DS13866 directly: it is PA14
+   (physical pin 8, this part's default SWCLK/BOOT0 binding) that gets
+   repurposed as USART2_TX, not PA13/SWDIO as originally assumed -- see
+   platform_stm32c011_uart.c's file comment for that correction. SWDIO
+   (PA13, physical pin 7) is left untouched by this backend; SWCLK
+   (PA14, physical pin 8) is repurposed for UART TX only when
+   VAULT_LOG_ENABLED is set (see platform_init() below).
 
    *** CORRECTED against the real STM32C011x4/x6 datasheet (DS13866) ***
    Task 1/an earlier pass on this file picked PF2 (physical pin 4) for
@@ -174,6 +176,13 @@ static void rtc_init(void);
 
 void platform_init(void) {
     HAL_Init();
+    /* PWR's peripheral clock is gated (RCC->IOPENR/APBENR-style enable
+       bit) like any other peripheral on this family, and
+       platform_enter_low_power_sleep() below writes PWR->CR1 via
+       HAL_PWR_EnterSTOPMode(). Rather than silently relying on PWR's
+       clock-enable bit already being set out of reset, enable it
+       explicitly here, once, before anything touches PWR registers. */
+    __HAL_RCC_PWR_CLK_ENABLE();
     gpio_init();
     /* No explicit HAL_RCC_ClockConfig() / SystemClock_Config() call is
        needed here, unlike STM32U031's MSI-based tree: RCC_CFGR's SW
@@ -185,9 +194,7 @@ void platform_init(void) {
        feeding SYSCLK) is likewise already enabled and selected out of
        reset per the STM32C0 reference manual's RCC chapter. HSI needs
        no PLL, trimming, or wait-for-ready spin here: it's already the
-       running, stable system clock the moment this line executes.
-       Task 7 (debug UART) appends its own init call here -- do not add
-       speculative calls to functions that don't exist yet. */
+       running, stable system clock the moment this line executes. */
     rtc_init();
 
 #ifdef VAULT_LOG_ENABLED
@@ -200,6 +207,25 @@ void platform_init(void) {
     extern void stm32c011_uart_init(void);
     stm32c011_uart_init();
 #endif
+}
+
+/* startup_stm32c011xx.s only weak-aliases SysTick_Handler to
+   Default_Handler's silent infinite loop. HAL_Init() (called first thing
+   in platform_init() above) configures SysTick to fire every 1 ms via
+   HAL_InitTick(), so without a real handler here, the first SysTick
+   interrupt -- roughly 1 ms after boot -- permanently hangs the CPU in
+   that infinite loop, before platform_init() itself even finishes (so
+   platform_main_rail_enable(true) never runs). This is the identical bug
+   platform_stm32u031.c's SysTick_Handler() already fixed on that
+   backend (see its comment for the on-hardware symptom this produces:
+   a fixed, content-independent amount of UART output before the CPU
+   goes silent, since the UART peripheral keeps draining whatever bytes
+   were already queued after the CPU itself stops running). This is the
+   STM32 convention CubeMX normally auto-generates into stm32c0xx_it.c;
+   this firmware was hand-written without that file. HAL_IncTick() is
+   what HAL_GetTick()/HAL_Delay() and all HAL timeout logic depend on. */
+void SysTick_Handler(void) {
+    HAL_IncTick();
 }
 
 /* --- RTC wake timer -- provenance and status --------------------------
@@ -402,12 +428,14 @@ void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc) {
       SYSCLK source, see platform_init()'s comment) and this function
       re-confirms explicitly/defensively exactly as STM32U031's
       i2c1_clock_source_init() does. HSIKER's divider (RCC_CR_HSIKERDIV,
-      configured via a *separate* RCC_PERIPHCLK_HSIKER selector this
-      driver does not set) resets to RCC_HSIKER_DIV1 (divide-by-1,
-      confirmed 0x0 in stm32c0xx_hal_rcc_ex.h), so HSIKER runs at the full,
+      configured via a *separate* RCC_PERIPHCLK_HSIKER selector) is set
+      explicitly below to RCC_HSIKER_DIV1 (divide-by-1, confirmed 0x0 in
+      stm32c0xx_hal_rcc_ex.h) so HSIKER is guaranteed to run at the full,
       undivided HSI_VALUE (48 MHz, confirmed in
-      platform/stm32c011/include/stm32c0xx_hal_conf.h) without this driver
-      needing to touch RCC_PERIPHCLK_HSIKER/HSIKerClockDivider at all.
+      platform/stm32c011/include/stm32c0xx_hal_conf.h) rather than
+      relying on RCC_CR_HSIKERDIV's reset-default *field* value (which
+      the RCC_HSIKER_DIV1 == 0x0 macro alone doesn't prove) being
+      divide-by-1.
 
    4. TIMING: STM32U031's 0x30200306 assumed a 16 MHz I2C kernel clock
       (t_I2CCLK = 62.5 ns) and picked PRESC=3 (t_PRESC = (PRESC+1) x
@@ -462,13 +490,21 @@ static void i2c1_clock_source_init(void) {
     }
 
     RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
-    periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
+    periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_HSIKER;
     /* RCC_I2C1CLKSOURCE_HSIKER, not STM32U031's RCC_I2C1CLKSOURCE_HSI --
        this part's I2C1 kernel clock source enum only offers PCLK1,
        SYSCLK, or HSIKER (confirmed in stm32c0xx_hal_rcc_ex.h); see the
        provenance comment above for what HSIKER actually is on this
        family. */
     periph_clk_init.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSIKER;
+    /* The TIMING value below (0xB0200306) is derived assuming HSIKER
+       runs undivided at 48 MHz. That only follows from
+       RCC_HSIKER_DIV1 == 0x0 (stm32c0xx_hal_rcc_ex.h) being the reset
+       value of RCC_CR's HSIKERDIV *field* -- which the macro's value
+       alone doesn't prove -- so set it explicitly here via
+       RCC_PERIPHCLK_HSIKER/HSIKerClockDivider rather than relying on
+       an assumed reset state, removing that ambiguity. */
+    periph_clk_init.HSIKerClockDivider = RCC_HSIKER_DIV1;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
 }
 
@@ -605,12 +641,51 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
    was already running before entry. No SystemClock_Config()-equivalent
    call is needed or exists for this backend. */
 void platform_enter_low_power_sleep(void) {
+    /* Lost-wakeup race, specific to this backend's Alarm-A wake source:
+       vault_core.c's ARM_SLEEP block (see its comment in core/src/vault_core.c)
+       calls platform_wakeup_timer_arm() and then does two vault_log() UART
+       transmissions (real time -- a handful of ms at 57600 baud) before
+       calling this function. If Alarm A's hh:mm:ss match already happened
+       during that window, RTC_IRQHandler()/HAL_RTC_AlarmAEventCallback()
+       already ran and cleared ALRAF before we ever reach WFI below -- so
+       by the time HAL_PWR_EnterSTOPMode() enters Stop mode, there is no
+       longer a pending wake source, and the device would sleep until the
+       NEXT alarm match. Because Alarm A is a once-per-day wall-clock
+       match (not a down-counter the way every other backend's wake timer
+       is -- see platform_wakeup_timer_arm()'s own comment), "the next
+       match" can be up to ~24h away, silently losing this wake cycle.
+       This is the sleep-path twin of the lost-wakeup race already fixed
+       around vault_core's WAKE_MAIN/I2C-wait loop (see vault/platform.h's
+       platform_irq_disable()/_enable() doc comment for the general
+       pattern) -- but that fix does not cover this path, since ARM_SLEEP
+       is a different code path from WAKE_MAIN.
+
+       Fix: mask interrupts, then check whether ALRAF is already set
+       before committing to WFI. If it is, treat this call as an
+       immediate wake instead of blocking -- consistent with this file's
+       other timer-safety fixes (e.g. STM32C011_WAKEUP_TIMER_MAX_SECONDS'
+       clamp above) always erring toward waking sooner than requested,
+       never later: this means the requested interval can end up up to
+       one alarm-check-window shorter than asked for in the
+       already-matched case, never longer. If ALRAF is NOT already set,
+       WFI still wakes correctly on a pending-but-masked interrupt per
+       the ARM architecture (the same guarantee platform_irq_disable()'s
+       doc comment already documents) -- so masking here only closes the
+       window *before* Stop entry; it does not prevent the alarm from
+       waking the CPU if it fires during/after Stop entry itself. */
+    platform_irq_disable();
+    if (__HAL_RTC_ALARM_GET_FLAG(&s_rtc_handle, RTC_FLAG_ALRAF)) {
+        platform_irq_enable();
+        return;
+    }
+
     HAL_SuspendTick();
     HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
     HAL_ResumeTick();
     /* No SystemClock_Config()-equivalent call needed -- see the comment
        above for why Stop exit already lands back on HSI/SYSCLK
        unchanged on this part. */
+    platform_irq_enable();
 }
 
 void platform_wait_for_interrupt(void) {

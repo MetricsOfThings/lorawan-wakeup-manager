@@ -111,7 +111,7 @@ Pin assignments (from the board schematic, see
 Already-committed pins not repurposed by this backend: `PA0` (on-board
 status LED), `PA1` (on-board user button), `#RESET` (reset button).
 
-### STM32C011J6M6 (build-only — no board exists for this target)
+### STM32C011J6M6 (real hardware in hand, pending bring-up verification)
 
 ```bash
 ./scripts/setup-vendor-submodules.sh
@@ -121,9 +121,13 @@ cmake --build .
 ```
 
 This target compiles and links against the vendored STM32Cube C0 HAL. No
-board schematic exists for this part — unlike the other three hardware
-backends, the pin table below is assigned here, not read off a board, and
-has not been flashed or validated on real silicon.
+board schematic exists for this part — it's a bare, hand-wired chip
+rather than a dev board, so unlike the other backends the pin table below
+is assigned here, not read off a board schematic (see the design spec's
+§1). Real hardware for this backend is already in hand, though — it has
+not yet been flashed or validated on real silicon, but that's tracked as
+a concrete next step (Task 9, manual hardware bring-up verification), not
+an indefinite "until hardware arrives" wait.
 
 STM32C011J6M6 is an 8-pin SO8N package (32 KB flash / 6 KB SRAM), so
 every pin is already committed — there are no pins to spare. Pin
