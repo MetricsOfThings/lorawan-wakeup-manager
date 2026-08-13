@@ -99,4 +99,24 @@ void vault_log(const char *msg) {
         USART_Tx(USART1, (uint8_t)*msg);
         msg++;
     }
+
+    /* USART_Tx() (vendored em_usart.c) only waits for STATUS.TXBL ("TX
+       buffer empty, ready for the next byte") before returning -- not
+       STATUS.TXC ("TX shift register has actually finished pushing the
+       bits onto the wire"). Without this, the last byte written above
+       (this file's callers always end a message with '\n' before the
+       "vault_core: sleep" log line, immediately followed by
+       platform_enter_low_power_sleep()) is still physically mid-shift-out
+       when EM2 entry cuts HFCLK -- which clocks USART1's bit-rate
+       generator -- truncating the tail of the message on the wire.
+       Confirmed on real hardware: captured log output showed
+       "vault_core: slee" followed by garbage exactly where "p\n" and the
+       next line should be, every time, not intermittently -- consistent
+       with a deterministic truncation, not a silicon/signal-integrity
+       fault. Waiting for TXC here (STATUS.TXC's own doc comment: "TX
+       Complete") closes that gap for every vault_log() call, not just
+       the one immediately preceding sleep, since any caller could in
+       principle be followed by code that changes HFCLK. */
+    while (!(USART1->STATUS & USART_STATUS_TXC)) {
+    }
 }

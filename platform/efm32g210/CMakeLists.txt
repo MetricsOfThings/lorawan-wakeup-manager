@@ -128,6 +128,13 @@ target_compile_options(vault_efm32g210_sdk_check PRIVATE -mcpu=cortex-m3 -mthumb
 # its definition must be compiled in or the link fails with "undefined
 # reference to EMU_EnterEM2" -- confirmed by actually attempting the
 # link without it first, same discipline as Task 4/5 above.
+# platform_efm32g210.c's platform_init() now calls CHIP_Init() (vendored
+# em_chip.h, __STATIC_INLINE -- so em_chip.h itself needs no source file),
+# which for this part calls SYSTEM_ChipRevisionGet(). That function is
+# declared without __STATIC_INLINE in em_system.h, defined in
+# em_system.c -- same "real source file needed" situation as the emlib
+# files above; confirmed by the same discipline (link failed with
+# "undefined reference to SYSTEM_ChipRevisionGet" without it).
 add_executable(vault_efm32g210
     src/startup_efm32g210.c
     src/main.c
@@ -139,6 +146,7 @@ add_executable(vault_efm32g210
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_core.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_rtc.c
     ${GECKO_SDK_ROOT}/platform/emlib/src/em_emu.c
+    ${GECKO_SDK_ROOT}/platform/emlib/src/em_system.c
     ${GECKO_SDK_ROOT}/platform/Device/SiliconLabs/EFM32G/Source/system_efm32g.c
 )
 

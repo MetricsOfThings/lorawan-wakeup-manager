@@ -100,10 +100,10 @@ Pin assignments (from the board schematic, see
 
 | Signal | Pin | Notes |
 | --- | --- | --- |
-| `MAIN_RAIL_EN` | `PC13` | Free GPIO, broken out on `CON2` pin 4 |
+| `MAIN_RAIL_EN` | `PC13` | Free GPIO, broken out on `CON2` pin 5 |
 | I2C0 SDA | `PD6` | `CON1` pin 7 / `UEXT` pin 6 |
 | I2C0 SCL | `PD7` | `CON1` pin 8 / `UEXT` pin 5 |
-| Debug UART TX (USART1) | `PC0` | `CON1` pin 4 |
+| Debug UART TX (USART1) | `PC0` | `CON1` pin 3 |
 | LFXO (32.768 kHz) | `PB7`/`PB8` | Already populated on-board (Q1) — RTC wake-timer clock source |
 | HFXO (32 MHz) | `PB13`/`PB14` | Already populated on-board (Q2) — main clock source |
 | `RSTN` | dedicated `#RESET` pin | `DBG` connector pin 15 / `CON2` pin 2 |
@@ -128,6 +128,75 @@ default.
   is left unconfigured.
 - **Host:** logs to stderr, useful when debugging `vault_core` logic
   locally alongside the unit tests.
+
+## Flashing with OpenOCD
+
+Each target links to an ELF, not a raw binary, so `openocd`'s `program`
+command (which handles the ELF's load addresses itself) is the simplest
+flashing path — no `objcopy` step needed. Run these from the target's
+build directory after `cmake --build .`. `verify reset exit` flashes,
+verifies against flash, resets the MCU into the new firmware, and exits
+OpenOCD.
+
+All three probes below assume a standard 10-pin/20-pin ARM SWD connection
+(`SWDIO`/`SWCLK`/`GND`/`VTref`, `RESET` optional but recommended).
+
+### LPC810
+
+```bash
+openocd -f interface/cmsis-dap.cfg -f target/lpc8xx.cfg \
+  -c "program platform/lpc810/vault_lpc810 verify reset exit"
+```
+
+- Swap `interface/cmsis-dap.cfg` for whatever probe you actually have
+  (`interface/stlink-dap.cfg`, `interface/jlink.cfg`, etc.) — LPC810 only
+  needs generic Cortex-M0+/SWD support, so any OpenOCD-supported SWD
+  probe works, this isn't NXP-specific.
+- `target/lpc8xx.cfg` ships in stock OpenOCD (confirmed present in the
+  Homebrew 0.12.0 package) — no vendor fork required.
+- Flash is mapped at `0x00000000` (`platform/lpc810/linker/lpc810.ld`).
+
+### STM32U031F8P6
+
+```bash
+openocd -f interface/stlink-dap.cfg -f target/stm32u0x.cfg \
+  -c "program platform/stm32u031/vault_stm32u031 verify reset exit"
+```
+
+- **Stock OpenOCD 0.12.0 (e.g. the Homebrew package) does not ship
+  `target/stm32u0x.cfg`** — STM32U0 support landed after that release.
+  Use either:
+  - ST's own OpenOCD build and scripts, bundled with STM32CubeIDE, e.g.
+    on macOS:
+    `.../STM32CubeIDE.app/Contents/Eclipse/plugins/com.st.stm32cube.ide.mcu.externaltools.openocd.<arch>_*/tools/bin/openocd`
+    with `-s .../com.st.stm32cube.ide.mcu.debug.openocd_*/resources/openocd/st_scripts`, or
+  - a mainline OpenOCD built from a recent enough source/nightly that
+    includes `target/stm32u0x.cfg`.
+- This target has not been flashed on real silicon yet (see the README
+  section above) — treat the command as untested until hardware arrives.
+- Flash is mapped at `0x08000000`
+  (`platform/stm32u031/linker/stm32u031f8.ld`).
+
+### EFM32G210F128
+
+```bash
+openocd -f interface/cmsis-dap.cfg -f target/efm32.cfg -c "adapter speed 400" \
+  -c "program platform/efm32g210/vault_efm32g210 verify reset exit"
+```
+
+- `target/efm32.cfg` is generic across all EFM32 families, including
+  this Series-0 "Gecko" part, and ships in stock OpenOCD.
+- The Olimex EM-32G210F128-H has no on-board debugger — connect an
+  external SWD probe to its `DBG` connector (`SWDIO`/`SWCLK`/`RSTN`, see
+  the pin table above for `RSTN`'s connector pin).
+- Flash is mapped at `0x00000000`
+  (`platform/efm32g210/linker/efm32g210f128.ld`).
+- **`adapter speed 400` is required** — `efm32.cfg`'s default of
+  1000 kHz is too fast for a hand-wired external SWD connection on this
+  board and reliably fails partway through flash erase (`Failed to read
+  memory at 0x400c0020`, then every subsequent memory access fails too).
+  Confirmed on real hardware: dropping to 400 kHz fixed it. If 400 still
+  fails, try lower (e.g. 100) before suspecting a hardware/wiring fault.
 
 ## Adding a new STM32 family backend later
 

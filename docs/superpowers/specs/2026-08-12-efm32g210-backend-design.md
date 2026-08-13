@@ -20,10 +20,10 @@ board's own user manual, not assumed):
 
 | Signal | Chip pin | Notes |
 |---|---|---|
-| `MAIN_RAIL_EN` | `PC13` | Free GPIO, broken out on `CON2` pin 4, not committed to any on-board fixed function |
+| `MAIN_RAIL_EN` | `PC13` | Free GPIO, broken out on `CON2` pin 5, not committed to any on-board fixed function |
 | I2C0 SDA | `PD6` | Board schematic labels this `I2C0_SDA`; broken out on `CON1` pin 7 and `UEXT` pin 6 |
 | I2C0 SCL | `PD7` | Board schematic labels this `I2C0_SCL`; broken out on `CON1` pin 8 and `UEXT` pin 5 |
-| Debug UART TX | `PC0` | USART1 TX (`US1_TX` on schematic), broken out on `CON1` pin 4 |
+| Debug UART TX | `PC0` | USART1 TX (`US1_TX` on schematic), broken out on `CON1` pin 3 |
 | LFXO (32.768 kHz) | `PB7`/`PB8` | Already populated on-board (Q1, with its own load caps) — this is the RTC wake-timer clock source |
 | HFXO (32 MHz) | `PB13`/`PB14` | Already populated on-board (Q2) — main clock source |
 | `RSTN` | dedicated `#RESET` pin | Available on `DBG` connector pin 15 and `CON2` pin 2 — unlike the LPC810 backend, hardware reset can be wired if useful for debugging |

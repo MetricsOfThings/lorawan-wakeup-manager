@@ -94,29 +94,36 @@ void platform_i2c_slave_init(uint8_t addr) {
        immediately re-trigger the IRQ once enabled below. */
     I2C0->IFC = _I2C_IFC_MASK;
 
-    /* Enable the peripheral in SLAVE mode with AUTOACK.
-     *
-     * I2C_CTRL_SLAVE (bit 1, "Addressable as Slave") and I2C_CTRL_AUTOACK
-     * (bit 2, "Automatic Acknowledge") are both confirmed field names in
-     * efm32g210f128.h. Both are load-bearing and were missing from the
-     * brief's sketch, which set only I2C_CTRL_EN:
-     *
-     *   - Without CTRL_SLAVE, the peripheral does not respond to its own
-     *     slave address at all -- I2C_STATE_MASTER-relative slave
-     *     matching per the reference manual's I2C chapter requires this
-     *     bit; em_i2c.c's own I2C_Init() sets it via
-     *     BUS_RegBitWrite(&i2c->CTRL, _I2C_CTRL_SLAVE_SHIFT, !init->master).
-     *   - Without CTRL_AUTOACK, this part's I2C slave state machine
-     *     clock-stretches (holds SCL low) after every address match and
-     *     every received data byte, waiting for firmware to explicitly
-     *     write CMD.ACK or CMD.NACK (see I2C_STATUS.PACK/"Pending ACK" in
-     *     efm32g210f128.h) before it will continue -- this driver's IRQ
-     *     handler never writes CMD, so without AUTOACK the bus would
-     *     hang permanently on the first address match. AUTOACK makes the
-     *     hardware generate that ACK itself for received address/data,
-     *     matching how this handler is actually written (it only reads
-     *     RXDATA / writes TXDATA / handles STOP, never touches CMD). */
-    I2C0->CTRL |= I2C_CTRL_SLAVE | I2C_CTRL_AUTOACK | I2C_CTRL_EN;
+    /* Enable the peripheral in SLAVE mode. Deliberately NOT using
+     * I2C_CTRL_AUTOACK ("Automatic Acknowledge") -- an earlier version of
+     * this driver did, and it caused intermittent, silent I2C data
+     * corruption on real hardware (bytes occasionally wrong on the master
+     * side with no error reported, both for register reads like
+     * VAULT_REG_VERSION and for context writes). Root cause: AUTOACK
+     * makes hardware ACK every received byte the instant it arrives, with
+     * no clock-stretching tied to firmware actually being ready --
+     * clock-stretching only happens for firmware-timing-independent
+     * reasons (e.g. internal sync), not to wait for RXDATA to be read. If
+     * this ISR is ever so much as one byte-time late (interrupt latency,
+     * a slower vault_i2c_registers_on_write_byte() call, IRQs briefly
+     * masked elsewhere), the next incoming byte silently overwrites
+     * RXDATA before it's consumed -- no error, no NACK, just a dropped/
+     * corrupted byte. This is the same hazard class the LPC810 backend's
+     * platform_lpc810_i2c.c avoids structurally: that peripheral holds
+     * SCL low (SLVPENDING) until firmware writes SLVCONTINUE, so the
+     * master physically cannot send the next byte before firmware is
+     * ready. Without AUTOACK, this part provides the equivalent guarantee
+     * via manual ACK: the peripheral clock-stretches (holds SCL low)
+     * after every address match and every received data byte, waiting
+     * for firmware to explicitly write I2C_CMD_ACK (or NACK) before
+     * continuing -- see I2C0_IRQHandler below, which now writes CMD.ACK
+     * after consuming each ADDR/RXDATAV byte, closing exactly the window
+     * AUTOACK left open. I2C_CTRL_SLAVE (bit 1, "Addressable as Slave")
+     * is still required and unrelated to this: without it the peripheral
+     * does not respond to its own slave address at all -- em_i2c.c's own
+     * I2C_Init() sets it via
+     * BUS_RegBitWrite(&i2c->CTRL, _I2C_CTRL_SLAVE_SHIFT, !init->master). */
+    I2C0->CTRL |= I2C_CTRL_SLAVE | I2C_CTRL_EN;
 
     /* Enable the relevant interrupt sources: address match, RX data
        valid, and slave STOP. Field names (I2C_IEN_ADDR, I2C_IEN_RXDATAV,
@@ -193,10 +200,11 @@ void I2C0_IRQHandler(void) {
        layout: ADDR (bit 2), TXC (3), TXBL (4), RXDATAV (5), ACK (6),
        NACK (7), SSTOP (16) are all independently testable status bits,
        matching the general EFM32 I2C IF register convention the brief
-       assumed. With CTRL_AUTOACK set (see platform_i2c_slave_init()),
-       the hardware handles ACK/NACK generation for the address match and
-       each received byte itself, so this handler only needs to react to
-       ADDR/RXDATAV/TXBL/SSTOP -- it never needs to write CMD.ACK/NACK.
+       assumed. AUTOACK is deliberately NOT set (see
+       platform_i2c_slave_init()'s comment) -- this handler explicitly
+       writes I2C_CMD_ACK after consuming the ADDR and RXDATAV bytes
+       below, which is what gives real clock-stretching instead of
+       AUTOACK's fire-and-forget behavior.
 
        On this part, ADDR and RXDATAV assert *together* on an address
        match, and the matched address byte is pushed into RXDATA just
@@ -215,6 +223,15 @@ void I2C0_IRQHandler(void) {
     if (flags & I2C_IF_ADDR) {
         (void)I2C0->RXDATA; /* consume the matched address byte */
         I2C0->IFC = I2C_IFC_ADDR;
+
+        /* Without AUTOACK (see platform_i2c_slave_init()'s comment), the
+           peripheral clock-stretches after the address match until
+           firmware acks it -- this releases that stretch now that the
+           address byte has actually been consumed above. I2C_CMD is a
+           write-only strobe register (confirmed in efm32g_i2c.h: no
+           readback/read-modify-write needed), so writing just this bit
+           doesn't disturb anything else. */
+        I2C0->CMD = I2C_CMD_ACK;
 
         /* A master READ addresses this slave as transmitter --
            I2C0->STATE's TRANSMITTER bit (confirmed in efm32g_i2c.h)
@@ -237,6 +254,14 @@ void I2C0_IRQHandler(void) {
         }
     } else if (flags & I2C_IF_RXDATAV) {
         vault_i2c_registers_on_write_byte((uint8_t)I2C0->RXDATA);
+
+        /* Same clock-stretch release as the ADDR branch above, but for a
+           data byte: only ack now that the byte has actually been
+           consumed by vault_i2c_registers_on_write_byte(), so the master
+           physically cannot start clocking the next byte in before this
+           one has been processed. This is the fix for the AUTOACK data
+           race described in platform_i2c_slave_init()'s comment. */
+        I2C0->CMD = I2C_CMD_ACK;
     }
 
     /* Belt-and-braces: even though I2C_IEN_TXBL is now only enabled

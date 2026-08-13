@@ -1,4 +1,5 @@
 #include "vault/platform.h"
+#include "em_chip.h"
 #include "em_cmu.h"
 #include "em_emu.h"
 #include "em_rtc.h"
@@ -107,7 +108,42 @@ static void efm32g210_clock_init(void) {
        ceiling, silently far short of VAULT_REG_WAKE_INTERVAL_SEC's full
        4-byte range. */
     CMU_ClockDivSet(cmuClock_RTC, cmuClkDiv_32);
+
+    /* RTC is a Low Energy (LE) peripheral: on this Series-0 part, the
+       CPU-side register interface for LE peripherals (RTC, LETIMER,
+       PCNT, LEUART) is gated by a separate bridge clock,
+       CMU_HFCORECLKEN0_LE ("Low Energy Peripheral Interface Clock
+       Enable" -- confirmed in efm32g210f128.h, RESETVALUE 0 i.e.
+       disabled by default), distinct from cmuClock_RTC above (which
+       only clocks the RTC's own LFA-derived counter, not the bus
+       bridge the CPU uses to read/write its registers). Without this,
+       RTC_Init()/RTC_CompareSet()/RTC_IntEnable() writes go through an
+       unclocked bridge -- they don't fault, they just don't reliably
+       take effect, so COMP0 never actually matches and the wake
+       interrupt never fires: the device sleeps and never wakes. Must
+       be enabled before efm32g210_rtc_init() touches any RTC register. */
+    CMU_ClockEnable(cmuClock_HFLE, true);
     CMU_ClockEnable(cmuClock_RTC, true);
+
+    /* Silicon Labs EFM32G errata I2C_E102 ("I2C Disabled After EM2/EM3",
+       silabs.com/documents/public/errata/efm32g-errata.pdf): if USART0's
+       clock is disabled, the I2C module comes back up disabled after
+       waking from EM2/EM3, and stays disabled until USART0's clock is
+       enabled -- even though this backend never uses USART0 itself
+       (I2C0 is on its own peripheral; USART1 is the debug UART). The
+       documented workaround is simply to keep USART0's clock enabled
+       whenever I2C is used. This erratum exists on chip revisions A and
+       B (fixed in C); this part's exact silicon revision was not
+       confirmed against the datasheet's revision-marking scheme, so the
+       workaround is applied unconditionally -- it is a documented no-op
+       on unaffected revisions (USART0 is otherwise idle: HFPERCLK-derived
+       peripheral clocks are gated off during EM2 regardless of this
+       enable bit, so this does not add any EM2 sleep current). Enabled
+       once here at boot, not tied to platform_i2c_slave_init()/_deinit()'s
+       per-cycle lifecycle: the erratum is specifically about the state
+       crossing an EM2/EM3 sleep, so toggling it off before sleep (to
+       mirror I2C0's own teardown) would defeat the workaround. */
+    CMU_ClockEnable(cmuClock_USART0, true);
 }
 
 static void efm32g210_rtc_init(void) {
@@ -158,6 +194,82 @@ static void efm32g210_rtc_init(void) {
 }
 
 void platform_init(void) {
+    /* Silicon Labs' own CHIP_Init() (vendored em_chip.h) -- its doc
+       comment states plainly "This function must be called immediately
+       in main()" for revision errata workarounds, and this backend was
+       never calling it. For _EFM32_GECKO_FAMILY (this part), it bundles
+       several silicon-revision-gated fixes, most notably: forcing a set
+       of CMU registers (0x400C8040/44/58/60/78) to their documented
+       reset values on early silicon (otherwise left in an unspecified,
+       manufacturing-variable state out of POR -- a very plausible source
+       of behavior that varies device-to-device or is intermittent
+       between wake cycles); an EM2/3-related DMA clock enable for rev A;
+       and -- confirmed by reading its source -- the *exact* rev-A/B
+       "USART0 clock must be enabled after waking from EM2/EM3 to get I2C
+       to work" fix efm32g210_clock_init()'s own cmuClock_USART0 enable
+       below already applies by hand (matching Silicon Labs' published
+       I2C_E102 errata). That hand-applied fix stays in place as a
+       revision-independent belt-and-braces measure, but CHIP_Init() is
+       the complete, officially-mandated set and must run first, before
+       any other peripheral init touches these registers. */
+    CHIP_Init();
+
+    /* Silicon Labs EFM32G errata EMU_E101 ("EM Transition Brown Out") and
+       CMU_E104 ("Energy Mode Transitions Cause HFRCO Overshoot"), both
+       from silabs.com/documents/public/errata/efm32g-errata.pdf, exist on
+       chip revisions A and B and are fixed in hardware from revision C:
+       transitioning between energy modes (e.g. EM2 wake, exactly this
+       backend's wake path) can spuriously brown-out reset the device, or
+       cause the HFRCO to overshoot its configured frequency by up to 50%
+       (i.e. above the part's 32 MHz limit) before settling, which can
+       itself trigger a BOD reset. Both are plausible, silicon-documented
+       causes of a spontaneous reset landing exactly at an EM2 wake
+       boundary -- which is what real hardware testing showed: debug UART
+       output correctly reached "vault_core: sleep" but the *next* line
+       observed was not "vault_core: wake" as expected, it was
+       "vault_core: init" (vault_core_init()'s own one-time boot message)
+       appearing again mid-capture, meaning the device actually reset
+       during/after the EM2 transition rather than resuming in place --
+       and cycles that didn't fully reset still showed garbled bytes
+       exactly at that same boundary, consistent with the core briefly
+       running at an unstable/overshot clock frequency (which would also
+       explain the paired, harder-to-pin-down intermittent I2C0 data
+       corruption reported during hardware bring-up: I2C0's bit-sampling
+       clock is derived from the same HFCLK).
+
+       Neither fix is included in CHIP_Init() above (confirmed by reading
+       its vendored source in full) -- unlike the fixes CHIP_Init() does
+       apply unconditionally, both of these carry an explicit "not
+       compatible with devices of later revisions where this erratum has
+       been corrected" warning in the errata text, so applying them
+       blindly on already-fixed silicon risks writing to a register field
+       that means something different there. They are therefore
+       explicitly gated on the same chipRev.major==1 (rev A/B use minor
+       0/1) check CHIP_Init() itself uses for its own rev-A/B-only fixes,
+       rather than applied unconditionally. */
+    {
+        SYSTEM_ChipRevision_TypeDef chip_rev;
+        SYSTEM_ChipRevisionGet(&chip_rev);
+        if (chip_rev.major == 1 && chip_rev.minor <= 1) {
+            /* EMU_E101: prevents spurious brown-out resets on EM
+               transitions. Costs ~4% extra current in EM0/EM1 per the
+               errata -- accepted here since a spontaneous mid-cycle
+               reset is far worse for this design than a small EM0/EM1
+               current increase (EM2 sleep current, where this device
+               spends nearly all its time, is unaffected). */
+            *(volatile uint32_t *)0x400C6020 |= 0x6000u;
+
+            /* CMU_E104: prevents HFRCO frequency overshoot (up to 50%,
+               i.e. potentially over the part's 32 MHz limit) during
+               energy mode transitions, which the errata states can
+               itself trigger a BOD reset. Costs ~10 uA extra current in
+               EM0/EM1 per the errata -- same tradeoff rationale as
+               EMU_E101 above. Not compatible with the ADC_E108 fix (this
+               backend does not use the ADC, so no conflict). */
+            *(volatile uint32_t *)0x400C6018 = 0xC201u;
+        }
+    }
+
     efm32g210_gpio_init();
     efm32g210_clock_init();
     efm32g210_rtc_init();
