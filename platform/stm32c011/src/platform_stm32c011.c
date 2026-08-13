@@ -54,6 +54,20 @@
 #define I2C_SCL_PORT      GPIOA
 #define I2C_SCL_PIN       GPIO_PIN_8
 
+/* platform_wakeup_timer_arm() below implements "fire in `seconds` seconds"
+   as a date-masked Alarm A match on hh:mm:ss (see that function's comment
+   for why) -- it computes `(now_of_day + seconds) % 86400`, which folds
+   seconds >= 86400 back into a smaller time-of-day than intended and
+   silently produces a SHORTER wait than requested (in the worst case,
+   seconds == 86400 collides with "right now" and the alarm fires almost
+   immediately instead of a full day later). 86399 is the largest value
+   for which that modulo still lands on a distinct, strictly-in-the-future
+   time-of-day relative to `now_of_day` (landing one second short of it,
+   never on top of it), so it is the true safe ceiling -- not 86400.
+   Clamping here errs toward waking sooner than requested, never later,
+   which is the safe direction for a wake timer. */
+#define STM32C011_WAKEUP_TIMER_MAX_SECONDS 86399u
+
 static RTC_HandleTypeDef s_rtc_handle;
 
 static void gpio_init(void) {
@@ -199,6 +213,13 @@ static void rtc_init(void) {
 }
 
 void platform_wakeup_timer_arm(uint32_t seconds) {
+    /* Clamp before anything else -- see STM32C011_WAKEUP_TIMER_MAX_SECONDS'
+       comment above for why 86400+ can't just be passed through to the
+       modulo arithmetic below. */
+    if (seconds > STM32C011_WAKEUP_TIMER_MAX_SECONDS) {
+        seconds = STM32C011_WAKEUP_TIMER_MAX_SECONDS;
+    }
+
     HAL_RTC_DeactivateAlarm(&s_rtc_handle, RTC_ALARM_A);
 
     RTC_TimeTypeDef now_time = {0};
