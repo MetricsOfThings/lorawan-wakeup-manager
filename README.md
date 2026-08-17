@@ -111,7 +111,7 @@ Pin assignments (from the board schematic, see
 Already-committed pins not repurposed by this backend: `PA0` (on-board
 status LED), `PA1` (on-board user button), `#RESET` (reset button).
 
-### STM32C011J6M6 (real hardware in hand, pending bring-up verification)
+### STM32C011J6M6 (real hardware in hand, flashed successfully)
 
 ```bash
 ./scripts/setup-vendor-submodules.sh
@@ -124,10 +124,22 @@ This target compiles and links against the vendored STM32Cube C0 HAL. No
 board schematic exists for this part — it's a bare, hand-wired chip
 rather than a dev board, so unlike the other backends the pin table below
 is assigned here, not read off a board schematic (see the design spec's
-§1). Real hardware for this backend is already in hand, though — it has
-not yet been flashed or validated on real silicon, but that's tracked as
-a concrete next step (Task 9, manual hardware bring-up verification), not
-an indefinite "until hardware arrives" wait.
+§1). Real hardware for this backend has been flashed successfully over
+SWD (see the "Flashing with OpenOCD" section below for the exact command
+and the decoupling-capacitor gotcha that blocked the first attempts).
+
+**Bring-up note (hand-wired chip, no decoupling cap):** the first several
+SWD connect attempts on real hardware failed with `Error connecting DP:
+cannot read IDR`, even with power/wiring/continuity all individually
+confirmed correct and a known-good probe/cable. Root cause was a missing
+decoupling capacitor: with only bare VDD/VSS leads (no local bypass
+capacitance), DC voltage measures clean and steady on a multimeter, but
+the transient current draw from SWD's own clock toggling was enough to
+disturb VDD locally and destabilize the debug port. A 100 nF ceramic
+capacitor soldered directly across VDD (pin 2) and VSS (pin 3), as close
+to the package as possible, resolved it. If you hit the same
+`cannot read IDR` error on a hand-wired build of this backend, check for
+a decoupling cap before suspecting the chip itself.
 
 STM32C011J6M6 is an 8-pin SO8N package (32 KB flash / 6 KB SRAM), so
 every pin is already committed — there are no pins to spare. Pin
@@ -163,6 +175,26 @@ stuck:
    force the ROM bootloader (USART1 or I2C1) regardless of what the
    previous firmware did to the pin's GPIO/AF state — this works even if
    SWD is fully unusable.
+
+## Pin reference
+
+Quick lookup for the pins of interest across all four hardware backends —
+where `SWDIO`/`SWCLK` (debug probe), `MAIN_RAIL_EN`, and the debug UART TX
+pin actually are. See each backend's own subsection above/below for the
+full pin table and sourcing (board schematic vs. hand-assigned) —
+this table only pulls out the four signals most likely to matter when
+wiring up a probe or a rail-switch.
+
+| Backend | `SWDIO` | `SWCLK` | `MAIN_RAIL_EN` | Debug UART TX |
+| --- | --- | --- | --- | --- |
+| LPC810 | `PIO0_2` (fixed) | `PIO0_3` (fixed) | `PIO0_0` | `PIO0_5` — shares the dedicated `RESET` pin; only present when `VAULT_LOG_ENABLED` (see below) |
+| STM32U031F8P6 | `PA13` (fixed) | `PA14` (fixed) | `PA0` | `PA2` (USART2) — no trade-off, this part has pins to spare |
+| EFM32G210F128 | Olimex `DBG` connector (chip pin not separately assigned/verified — not repurposed by this backend, so it was never needed) | Olimex `DBG` connector (same) | `PC13` | `PC0` (USART1) — no trade-off, this part has pins to spare |
+| STM32C011J6M6 | `PA13` (pin 7, fixed — **cannot** carry UART, no USART TX alternate function exists on this pin) | `PA14` (pin 8, default) | `PB7` (pin 1) | **`PA14`/`SWCLK` itself** (pin 8, `USART2_TX` AF1) — only present when `VAULT_LOG_ENABLED`, and doing so makes live SWD debugging unavailable for the life of that build (see the STM32C011J6M6 build section above) |
+
+The STM32C011J6M6 row is the one to read carefully before flashing a
+`VAULT_LOG_ENABLED` build: its debug UART TX pin *is* `SWCLK`, not a
+separate free pin like every other backend has.
 
 ## Debug logging
 
@@ -275,14 +307,19 @@ openocd -f interface/stlink-dap.cfg -f target/stm32c0x.cfg \
     the STM32U031F8P6 section above for the macOS path), or
   - a mainline OpenOCD built from a recent enough source/nightly that
     includes `target/stm32c0x.cfg`.
-- This target has no board and has not been flashed on real silicon yet
-  (see the build section above) — treat the command as untested.
+- This target has no board — it's a bare, hand-wired chip — but has been
+  flashed and confirmed working on real silicon (see the build section
+  above).
 - Flash is mapped at `0x08000000`
   (`platform/stm32c011/linker/stm32c011j6.ld`).
 - If SWD debugging becomes unresponsive on a `VAULT_LOG_ENABLED` build,
   see the "Debug-logging trade-off" note in the build section above
   before assuming a wiring fault — `SWCLK` may simply be running as
   UART TX.
+- If you get `Error connecting DP: cannot read IDR` on a fresh hand-wired
+  build of this chip, see the "Bring-up note" in the build section above
+  — a missing VDD/VSS decoupling capacitor is the most likely cause, not
+  a wiring fault.
 
 ## Adding a new STM32 family backend later
 
