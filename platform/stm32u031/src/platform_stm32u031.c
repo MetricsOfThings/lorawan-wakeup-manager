@@ -177,6 +177,23 @@ void platform_wakeup_timer_clear(void) {
 
 static void i2c_pins_init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    /* Without this remap, GPIOA pin 9/10 (I2C_SCL_PIN/I2C_SDA_PIN below)
+       land on physical TSSOP20 pin 14, which the datasheet's Table 12
+       shows shared three ways between PA8/PA9/PA10 -- its power-on
+       default binding among those three is not documented, so which
+       identity (if any) is actually live there without an explicit
+       select is unverified. SYSCFG_REMAP_PA11/PA12 instead routes pin
+       9/10's signals out through the PA11/PA12 leads (physical pins
+       15/16), whose behavior *is* documented directly: "PA11 pad
+       behaves digitally as PA9 GPIO pin" / "PA12 pad behaves digitally
+       as PA10 GPIO pin" (stm32u0xx_hal.h). The GPIO_PIN_9/GPIO_PIN_10
+       identifiers below do not change -- only which physical pad they
+       resolve to. Must run before HAL_GPIO_Init() configures those
+       pins, and needs the SYSCFG peripheral clock enabled first. */
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    HAL_SYSCFG_EnableRemap(SYSCFG_REMAP_PA11 | SYSCFG_REMAP_PA12);
+
     GPIO_InitTypeDef gpio_init = {0};
     gpio_init.Pin = I2C_SDA_PIN | I2C_SCL_PIN;
     gpio_init.Mode = GPIO_MODE_AF_OD;
