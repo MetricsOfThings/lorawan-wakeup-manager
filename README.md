@@ -74,6 +74,55 @@ This target compiles and links against the vendored STM32Cube HAL but has
 not been flashed or validated on real silicon yet — see the design spec's
 "out of scope" section.
 
+STM32U031F8P6 is a 20-pin TSSOP20 package (64 KB flash / 12 KB SRAM).
+Full pinout (from the real STM32U031x4/6/8 datasheet, DS14581 Rev 2,
+Table 12 "STM32U031x4/6/8 pin/ball definition" and Figure 3 "TSSOP20
+pinout", both read directly off the vendor PDF, not derived):
+
+| Pin | Name (function after reset) | Used by this backend |
+| --- | --- | --- |
+| 1 | `PB8`/`PB9` | — |
+| 2 | `VSS` | Ground |
+| 3 | `VDD` | Power |
+| 4 | `PC14-OSC32_IN` | — |
+| 5 | `PC15-OSC32_OUT` | — |
+| 6 | `PF2-NRST` | `NRST` |
+| 7 | `VDDA`/`VREF+` | Tied to `VDD` |
+| 8 | `PA0-CK_IN` | `MAIN_RAIL_EN` (`PA0`) |
+| 9 | `PA1`/`PA2` | Debug UART TX (`PA2`, `USART2`) |
+| 10 | `PA3`/`PA4` | — |
+| 11 | `PA5`/`PA6` | — |
+| 12 | `PA7`/`PB0` | — |
+| 13 | `PB1` | — |
+| 14 | `PA8`/`PA9`/`PA10` | I2C1 SCL/SDA (`PA9`/`PA10`) — **see caveat below** |
+| 15 | `PA11` (remappable to `PA9` via `SYSCFG_CFGR1`) | Alternate route to `PA9` — **not used by current code** |
+| 16 | `PA12` (remappable to `PA10` via `SYSCFG_CFGR1`) | Alternate route to `PA10` — **not used by current code** |
+| 17 | `PA13` (`SWDIO`) | `SWDIO` |
+| 18 | `PA14` (`SWCLK`)/`PB4`/`PB5`/`PB6` | `SWCLK` |
+| 19 | `PB7` | — |
+| 20 | `PF3-BOOT0` (`BOOT0`) | — |
+
+Like the STM32C011J6M6's SO8N package (see below), this reduced-pin
+TSSOP20 package multiplexes several GPIO identities onto single physical
+leads: pin 14 alone can present as `PA8`, `PA9`, *or* `PA10` depending on
+a `SYSCFG` pin-binding selection, and the datasheet separately documents
+that "`PA9`/`PA10` can be remapped in place of pins `PA11`/`PA12`
+(default mapping), using `SYSCFG_CFGR1` register" — i.e. pins 15/16
+default to `PA11`/`PA12` and only show `PA9`/`PA10` if explicitly
+remapped.
+
+**Caveat:** [`platform_stm32u031.c`](platform/stm32u031/src/platform_stm32u031.c)
+configures I2C1 as `GPIOA` pin 9/10 (`I2C_SCL_PIN`/`I2C_SDA_PIN`) but
+makes no `SYSCFG` binding or remap call at all before doing so. Whether
+that reaches a physically functional pin depends on pin 14's power-on
+default binding (undocumented in this datasheet — the STM32C011J6M6
+backend needed an explicit call for the equivalent case, see
+"STM32C011 Alarm-A" and "SYSCFG_CFGR3" fixes in git history) or, if not,
+whether the fallback should instead be an explicit `SYSCFG_CFGR1` remap
+onto pins 15/16. This has not been exercised on real hardware yet (this
+target is still build-only) — verify I2C1 actually works during this
+backend's own hardware bring-up before trusting it silently.
+
 ### EFM32G210F128 (real hardware in hand, pending bring-up verification)
 
 ```bash
