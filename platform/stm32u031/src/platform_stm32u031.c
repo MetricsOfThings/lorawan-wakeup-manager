@@ -5,10 +5,25 @@
 
 #define MAIN_RAIL_EN_PORT GPIOA
 #define MAIN_RAIL_EN_PIN  GPIO_PIN_0
+/* I2C2 on PA6/PA7 (physical pins 11/12), not I2C1 on PA9/PA10 (physical
+   pins 14/15 via the PA11 remap) -- real hardware testing (single-wire
+   injection: drive only SDA with SCL fully disconnected, observe the
+   same signal appear on both pins with no external connection at all,
+   then repeat driving only SCL) proved PA9/PA10/PA11/PA12 are
+   electrically tied together on this specific chip/package, contrary
+   to what the datasheet's documented SYSCFG_CFGR1 remap register
+   implies. I2C2 is a genuinely separate peripheral instance with its
+   own register block (confirmed against stm32u031xx.h: I2C2_BASE,
+   distinct from I2C1_BASE) on pins with no involvement in that tied
+   cluster at all. PA6/PA7 do share their own physical pins (11/12)
+   with PA5/PB0 respectively per the datasheet, but that sharing is
+   undocumented as a runtime-selectable mechanism (no footnote, unlike
+   PA9-12's explicit remap) -- verify with the same single-wire
+   injection test before trusting it. */
 #define I2C_SDA_PORT      GPIOA
-#define I2C_SDA_PIN       GPIO_PIN_10
+#define I2C_SDA_PIN       GPIO_PIN_6
 #define I2C_SCL_PORT      GPIOA
-#define I2C_SCL_PIN       GPIO_PIN_9
+#define I2C_SCL_PIN       GPIO_PIN_7
 
 /* Defined in main.c; no shared header declares it (mirrors CubeMX's own
    convention of a project-wide but header-less SystemClock_Config()). */
@@ -109,7 +124,7 @@ static void rtc_init(void) {
 
     /* Enable the RTC/TAMP combined NVIC line so RTC_TAMP_IRQHandler
        (below) actually fires when the wakeup timer elapses -- mirrors
-       how platform_i2c_slave_init() enables I2C1_IRQn right after
+       how platform_i2c_slave_init() enables I2C2_3_IRQn right after
        HAL_I2C_Init(). Without this, WKT-equivalent behavior on this
        backend would have the same "vectors into Default_Handler" bug
        Critical #1 fixed on the LPC810 side. RTC_TAMP_IRQn (IRQ 2) is the
@@ -178,83 +193,49 @@ void platform_wakeup_timer_clear(void) {
 static void i2c_pins_init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    /* Without this remap, GPIOA pin 9/10 (I2C_SCL_PIN/I2C_SDA_PIN below)
-       land on physical TSSOP20 pin 14, which the datasheet's Table 12
-       shows shared three ways between PA8/PA9/PA10 -- its power-on
-       default binding among those three is not documented, so which
-       identity (if any) is actually live there without an explicit
-       select is unverified. SYSCFG_REMAP_PA11/PA12 instead routes pin
-       9/10's signals out through the PA11/PA12 leads (physical pins
-       15/16), whose behavior *is* documented directly: "PA11 pad
-       behaves digitally as PA9 GPIO pin" / "PA12 pad behaves digitally
-       as PA10 GPIO pin" (stm32u0xx_hal.h). The GPIO_PIN_9/GPIO_PIN_10
-       identifiers below do not change -- only which physical pad they
-       resolve to. Must run before HAL_GPIO_Init() configures those
-       pins, and needs the SYSCFG peripheral clock enabled first. */
-    __HAL_RCC_SYSCFG_CLK_ENABLE();
-    HAL_SYSCFG_EnableRemap(SYSCFG_REMAP_PA11 | SYSCFG_REMAP_PA12);
-
     GPIO_InitTypeDef gpio_init = {0};
     gpio_init.Pin = I2C_SDA_PIN | I2C_SCL_PIN;
     gpio_init.Mode = GPIO_MODE_AF_OD;
     gpio_init.Pull = GPIO_NOPULL;
-    /* GPIO_AF4_I2C1 -- verified against the vendored device header
-       (stm32u0xx_hal_gpio_ex.h): STM32U031 only defines I2C1's
-       alternate-function mapping as AF4 (the brief's guess of AF6 does
-       not exist for this device). Also verify against the STM32U031
-       datasheet's alternate-function table for whichever pins the real
-       schematic actually uses. */
-    gpio_init.Alternate = GPIO_AF4_I2C1;
+    /* GPIO_AF3_I2C2 -- verified against both the vendored device header
+       (stm32u0xx_hal_gpio_ex.h: GPIO_AF3_I2C2 exists) and the STM32U031
+       datasheet's Port A alternate-function table: PA6 lists I2C2_SDA
+       at AF3, PA7 lists I2C2_SCL at AF3. No SYSCFG remap needed --
+       unlike I2C1 on PA9/PA10, these pins reach I2C2 directly. */
+    gpio_init.Alternate = GPIO_AF3_I2C2;
     HAL_GPIO_Init(I2C_SDA_PORT, &gpio_init);
 }
 
-static void i2c1_clock_source_init(void) {
-    /* I2C1's kernel clock defaults to PCLK1, which tracks the low-power
-       main clock (MSI, kept slow for power per SystemClock_Config()) --
-       far too slow to reach 400 kHz Fast-mode. Switching I2C1's kernel
-       clock source to HSI (16 MHz, fixed) decouples I2C bus timing from
-       the main clock choice, matching how the RTC's clock source is
-       already selected independently in rtc_init() above. HSI must be
-       explicitly turned on first: unlike MSI it is not guaranteed
-       running at this point since SystemClock_Config() only configures
-       MSI. __HAL_RCC_HSI_ENABLE() only sets HSION -- it does not wait
-       for the oscillator to actually stabilize, so without the
-       HSIRDY spin-wait below, HAL_I2C_Init() a few lines down could
-       start clocking I2C1 from HSI before it's actually running,
-       corrupting the timing of whichever I2C transaction happens to
-       land first after each wake. Verify HSI's real startup time (and
-       thus whether this wait is ever observable in practice) against
-       the STM32U031 datasheet's oscillator characteristics table. */
-    __HAL_RCC_HSI_ENABLE();
-    while (!__HAL_RCC_GET_FLAG(RCC_FLAG_HSIRDY)) {
-        /* Busy-wait for HSI to stabilize. */
-    }
-
-    RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
-    periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
-    periph_clk_init.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
-    HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
-}
-
 void platform_i2c_slave_init(uint8_t addr) {
-    i2c1_clock_source_init();
-    __HAL_RCC_I2C1_CLK_ENABLE();
+    /* Unlike I2C1, I2C2 has NO independent kernel-clock-source select
+       on this device -- checked directly against the vendored header:
+       RCC_PERIPHCLK_I2C1 and RCC_PERIPHCLK_I2C3 both exist as
+       HAL_RCCEx_PeriphCLKConfig() selector bits, but RCC_PERIPHCLK_I2C2
+       does not (even though RCC_I2C2CLKSOURCE_HSI/etc. constants exist
+       in the header for consistency, there's no way to actually apply
+       them to I2C2 via the HAL's peripheral-clock API on this part).
+       I2C2 is therefore permanently on PCLK1, which tracks
+       SystemClock_Config()'s ~4 MHz MSI -- too slow for the 400 kHz
+       Fast-mode I2C1 used, so the Timing value below targets
+       Standard-mode (100 kHz) instead, derived for a 4 MHz kernel
+       clock. No HSI enable/wait is needed here at all (unlike the old
+       I2C1 path), since I2C2 never leaves PCLK1. */
+    __HAL_RCC_I2C2_CLK_ENABLE();
     i2c_pins_init();
 
-    s_i2c_handle.Instance = I2C1;
-    /* Fast-mode (400 kHz) at a 16 MHz I2C kernel clock (HSI, selected
-       above), computed by hand from ST's TIMINGR formula
+    s_i2c_handle.Instance = I2C2;
+    /* Standard-mode (100 kHz) at a 4 MHz I2C kernel clock (PCLK1/MSI --
+       see platform_i2c_slave_init()'s comment on why I2C2 can't use
+       HSI like I2C1 did), computed by hand from ST's TIMINGR formula
        (t_SCL = t_SYNC1 + t_SYNC2 + [(SCLH+1)+(SCLL+1)] x (PRESC+1) x
-       t_I2CCLK) rather than taken from a verified CubeMX/datasheet
-       table -- PRESC=3, SCLDEL=2, SDADEL=0, SCLH=3, SCLL=6 gives
-       t_I2CCLK=62.5ns, t_PRESC=250ns, SCLH=1000ns, SCLL=1750ns, for an
-       estimated ~348 kHz actual SCL (safely under the 400 kHz Fast-mode
-       ceiling, assuming a ~125 ns SYNC1+SYNC2 analog-filter delay this
-       hand calculation can't measure precisely). Re-derive and confirm
-       this value with CubeMX's timing calculator or a scope before
-       flashing -- same caveat this file already applies to the 100 kHz
-       constant this replaces. */
-    s_i2c_handle.Init.Timing = 0x30200306;
+       t_I2CCLK) -- PRESC=0, SCLDEL=1, SDADEL=0, SCLH=16, SCLL=19 gives
+       t_I2CCLK=250ns, t_PRESC=250ns, SCLH=4250ns (Sm min t_HIGH=4000ns),
+       SCLL=5000ns (Sm min t_LOW=4700ns), for an estimated ~108 kHz
+       actual SCL -- both minimums cleared with margin. Re-derive and
+       confirm this value with CubeMX's timing calculator or a scope
+       before flashing -- same caveat this file already applied to the
+       400 kHz I2C1 constant this replaces. */
+    s_i2c_handle.Init.Timing = 0x00101013;
     s_i2c_handle.Init.OwnAddress1 = (uint32_t)(addr << 1);
     s_i2c_handle.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
     s_i2c_handle.Init.OwnAddress2 = 0;
@@ -263,26 +244,29 @@ void platform_i2c_slave_init(uint8_t addr) {
     s_i2c_handle.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
     HAL_I2C_Init(&s_i2c_handle);
 
-    HAL_NVIC_SetPriority(I2C1_IRQn, 0, 0);
-    HAL_NVIC_EnableIRQ(I2C1_IRQn);
+    HAL_NVIC_SetPriority(I2C2_3_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(I2C2_3_IRQn);
 
     HAL_I2C_EnableListen_IT(&s_i2c_handle);
 }
 
 void platform_i2c_slave_deinit(void) {
-    HAL_NVIC_DisableIRQ(I2C1_IRQn);
+    HAL_NVIC_DisableIRQ(I2C2_3_IRQn);
     HAL_I2C_DisableListen_IT(&s_i2c_handle);
     HAL_I2C_DeInit(&s_i2c_handle);
-    __HAL_RCC_I2C1_CLK_DISABLE();
+    __HAL_RCC_I2C2_CLK_DISABLE();
 }
 
-void I2C1_IRQHandler(void) {
-    /* STM32U031's I2C1_IRQn (IRQ 23) is a single combined line for both
-       event and error interrupts (see stm32u031xx.h: "I2C1 global
-       interrupt"), unlike larger STM32 families that split I2Cx_EV and
-       I2Cx_ER onto separate NVIC lines. Both HAL sub-handlers must be
-       serviced from this one ISR or NACK/bus-error conditions raised
-       while listen mode is enabled would never be handled. */
+void I2C2_3_IRQHandler(void) {
+    /* STM32U031's I2C2_3_IRQn (IRQ 24) is a single combined line for
+       I2C2 AND I2C3 (see stm32u031xx.h: "I2C2 / I2C3 global
+       interrupt"), and within that, still a single combined line for
+       both event and error interrupts, matching I2C1's own
+       event+error combining. Since I2C3 is never initialized by this
+       backend, this handler only ever needs to service I2C2, but both
+       HAL sub-handlers must still be called or NACK/bus-error
+       conditions raised while listen mode is enabled would never be
+       handled. */
     HAL_I2C_EV_IRQHandler(&s_i2c_handle);
     HAL_I2C_ER_IRQHandler(&s_i2c_handle);
 }
@@ -338,7 +322,7 @@ void platform_wait_for_interrupt(void) {
        stm32u0xx_hal_pwr_ex.c. Without explicitly clearing it here, any
        call to this function after the first full Stop 2 cycle would
        silently fall through to Stop 2 instead of plain Sleep mode (CPU
-       clock only, everything else -- including I2C1 -- still running
+       clock only, everything else -- including I2C2 -- still running
        and able to service the interrupt this is waiting for). Plain
        __WFI() with SLEEPDEEP clear halts only the CPU core clock until
        any enabled interrupt fires. */

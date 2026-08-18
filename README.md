@@ -91,35 +91,45 @@ pinout", both read directly off the vendor PDF, not derived):
 | 8 | `PA0-CK_IN` | `MAIN_RAIL_EN` (`PA0`) |
 | 9 | `PA1`/`PA2` | Debug UART TX (`PA2`, `USART2`) |
 | 10 | `PA3`/`PA4` | — |
-| 11 | `PA5`/`PA6` | — |
-| 12 | `PA7`/`PB0` | — |
+| 11 | `PA5`/`PA6` | I2C2 SDA (`PA6`) |
+| 12 | `PA7`/`PB0` | I2C2 SCL (`PA7`) |
 | 13 | `PB1` | — |
-| 14 | `PA8`/`PA9`/`PA10` | — (not used; see note below) |
-| 15 | `PA11` (remapped to `PA9` via `SYSCFG_CFGR1`) | I2C1 SCL |
-| 16 | `PA12` (remapped to `PA10` via `SYSCFG_CFGR1`) | I2C1 SDA |
+| 14 | `PA8`/`PA9`/`PA10` | — (not used) |
+| 15 | `PA11` | — (not used) |
+| 16 | `PA12` | — (not used) |
 | 17 | `PA13` (`SWDIO`) | `SWDIO` |
 | 18 | `PA14` (`SWCLK`)/`PB4`/`PB5`/`PB6` | `SWCLK` |
 | 19 | `PB7` | — |
 | 20 | `PF3-BOOT0` (`BOOT0`) | — |
 
-Like the STM32C011J6M6's SO8N package (see below), this reduced-pin
-TSSOP20 package multiplexes several GPIO identities onto single physical
-leads: pin 14 alone can present as `PA8`, `PA9`, *or* `PA10` depending on
-a `SYSCFG` pin-binding selection whose power-on default this datasheet
-doesn't document. Rather than depend on that undocumented default, this
-backend's I2C1 pins are explicitly routed through the *other*,
-fully-documented path instead: `SYSCFG_CFGR1`'s `PA11`/`PA12` remap
-bits, which the datasheet states plainly — "PA11 pad behaves digitally
-as PA9 GPIO pin" / "PA12 pad behaves digitally as PA10 GPIO pin"
-(`stm32u0xx_hal.h`) — landing I2C1 SCL/SDA on physical pins 15/16
-instead of pin 14.
-[`platform_stm32u031.c`](platform/stm32u031/src/platform_stm32u031.c)'s
-`i2c_pins_init()` calls `HAL_SYSCFG_EnableRemap(SYSCFG_REMAP_PA11 |
-SYSCFG_REMAP_PA12)` before configuring the pins to do this — the
-`GPIO_PIN_9`/`GPIO_PIN_10` identifiers in code don't change, only which
-physical pad they resolve to. This has not been exercised on real
-hardware yet (this target is still build-only) — confirm I2C1 actually
-works during this backend's own hardware bring-up.
+**I2C is on `I2C2` (pins 11/12), not `I2C1` (pins 14/15/16) — confirmed
+on real hardware after real bring-up debugging, not a documentation
+guess.** The original plan used `I2C1` on `PA9`/`PA10`, reached via the
+`SYSCFG_CFGR1` `PA11`/`PA12` remap the datasheet documents ("PA11 pad
+behaves digitally as PA9 GPIO pin", `stm32u0xx_hal.h`). On real
+hardware, a single-wire injection test (drive only SDA with SCL fully
+disconnected, watch the signal appear on SCL anyway with nothing
+externally connected there, then repeat driving only SCL) showed
+`PA9`/`PA10`/`PA11`/`PA12` electrically tied together on this specific
+chip/package, contradicting what the documented remap register implies
+— reproduced across three different pin/peripheral combinations
+(`I2C1` on 15/16, `I2C1` on 14/15, `I2C2` on 11/12 before the final
+pin choice) and confirmed independent of any single chip or solder
+joint by testing a second, independently hand-wired board with the
+identical result.
+
+`I2C2` on `PA6`/`PA7` (`GPIO_AF3_I2C2`, no `SYSCFG` remap needed) is
+outside that tied cluster entirely and is the configuration that
+actually works — confirmed via logic analyzer showing correct ACK
+behavior at the vault's address (`0x42`) and successful register
+writes. One caveat: `I2C2` has **no independent kernel-clock-source
+select** on this part (checked against the vendored header:
+`RCC_PERIPHCLK_I2C1`/`_I2C3` exist, `RCC_PERIPHCLK_I2C2` does not), so
+it stays on `PCLK1` (~4 MHz via this backend's MSI-based
+`SystemClock_Config()`) rather than the independently-clocked HSI path
+`I2C1` used — [`platform_stm32u031.c`](platform/stm32u031/src/platform_stm32u031.c)
+therefore runs `I2C2` at Standard-mode (100 kHz), not the original
+400 kHz Fast-mode.
 
 ### EFM32G210F128 (real hardware in hand, pending bring-up verification)
 
