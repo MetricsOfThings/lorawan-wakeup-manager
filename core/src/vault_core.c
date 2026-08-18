@@ -11,9 +11,19 @@ void vault_core_init(void) {
 void vault_core_step(void) {
     /* WAKE_MAIN */
     vault_log("vault_core: wake_main enter\n");
-    platform_main_rail_enable(true);
+    /* I2C1 must be live BEFORE the main MCU's rail turns on: the main
+       MCU starts polling for the version register as soon as it has
+       power, and if platform_i2c_slave_init() hasn't run yet, SDA/SCL
+       are still in their unconfigured/floating reset state -- a bus
+       that doesn't look idle-high blocks most I2C masters' blocking
+       HAL calls indefinitely before they even attempt a START
+       condition, with no error reported. Enabling the rail first left
+       a real race window here; it happened not to lose on LPC810/
+       EFM32G210 but did on STM32U031, whose I2C clock-source setup has
+       a busy-wait for HSI to stabilize. */
     vault_i2c_registers_reset_for_cycle();
     platform_i2c_slave_init(VAULT_I2C_ADDR);
+    platform_main_rail_enable(true);
 
     for (;;) {
         /* Real backends service I2C via an interrupt handler that calls

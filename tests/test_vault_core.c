@@ -45,10 +45,16 @@ static void test_first_cycle_calls_in_order(void) {
        without ever calling platform_wait_for_interrupt() again. That's
        IRQ_DISABLE, WAIT_FOR_INTERRUPT, IRQ_ENABLE, IRQ_DISABLE, IRQ_ENABLE,
        for a total of 5 calls covering the loop, 12 calls overall. */
+    /* I2C1 must be live before the main MCU's rail turns on -- otherwise
+       the main MCU can start polling for the version register before
+       platform_i2c_slave_init() has run, finding SDA/SCL still in their
+       unconfigured/floating reset state and blocking indefinitely
+       before even attempting a START condition (observed on real
+       STM32U031F8P6 hardware; see git history). */
     TEST_ASSERT(host_mock_call_count() >= 12);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(0)->call);
-    TEST_ASSERT_EQ_INT(1, host_mock_call_at(0)->arg);
-    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_INIT, host_mock_call_at(1)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_I2C_SLAVE_INIT, host_mock_call_at(0)->call);
+    TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_MAIN_RAIL_ENABLE, host_mock_call_at(1)->call);
+    TEST_ASSERT_EQ_INT(1, host_mock_call_at(1)->arg);
     TEST_ASSERT_EQ_INT(HOST_MOCK_CALL_IRQ_DISABLE, host_mock_call_at(2)->call);
     /* The mock replays queued I2C transactions from
        platform_wait_for_interrupt() (the wait loop's per-iteration
