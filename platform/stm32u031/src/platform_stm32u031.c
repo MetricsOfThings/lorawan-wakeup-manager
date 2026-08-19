@@ -223,33 +223,42 @@ void platform_i2c_slave_init(uint8_t addr) {
        in the header for consistency, there's no way to actually apply
        them to I2C2 via the HAL's peripheral-clock API on this part).
        I2C2 is therefore permanently on PCLK1, which tracks
-       SystemClock_Config()'s ~4 MHz MSI -- too slow for the 400 kHz
-       Fast-mode I2C1 used, so the Timing value below targets
-       Standard-mode (100 kHz) instead, derived for a 4 MHz kernel
-       clock. No HSI enable/wait is needed here at all (unlike the old
-       I2C1 path), since I2C2 never leaves PCLK1. */
+       SystemClock_Config()'s MSI (raised to ~16 MHz -- see that
+       function's comment for why). No HSI enable/wait is needed here
+       at all (unlike the old I2C1 path), since I2C2 never leaves
+       PCLK1. */
     __HAL_RCC_I2C2_CLK_ENABLE();
     i2c_pins_init();
 
     s_i2c_handle.Instance = I2C2;
-    /* ~50 kHz (half of Standard-mode) at a 4 MHz I2C kernel clock
-       (PCLK1/MSI -- see this function's comment on why I2C2 can't use
-       HSI like I2C1 did) -- PRESC=0, SCLDEL=2, SDADEL=0, SCLH=36,
-       SCLL=42 gives t_I2CCLK=250ns, SCLH=9250ns, SCLL=10750ns,
-       t_SCL=20000ns -> ~50 kHz.
-       History: the NACK on VAULT_REG_COMMAND/VAULT_CMD_DONE's value
-       byte was originally reproduced with an nRF52840-based host and
-       traced to that chip's documented TWI errata #149 (the first
-       clock pulse after the slave exits clock stretching can be too
-       short or lost) -- switching to a different host (ESP32-C3 based)
-       fixed it at this same ~50 kHz setting. But bumping that same
-       ESP32-C3 host up to the ~108 kHz Standard-mode value
-       (0x00101013) broke it again, so this genuinely is (also) a real
-       timing-margin problem on top of the nRF52840-specific errata --
-       not purely host-silicon-specific. ~50 kHz is the confirmed
-       working speed; do not raise it without hardware retesting on
-       whichever host is actually in use. */
-    s_i2c_handle.Init.Timing = 0x0020242A;
+    /* Timing history at the ORIGINAL 4 MHz PCLK1 (before
+       SystemClock_Config() raised MSI to ~16 MHz -- see that
+       function's comment for why): 0x0020242A (~50 kHz) confirmed
+       working on both an nRF52840 host (once that chip's TWI errata
+       #149 was identified -- the first clock pulse after the slave
+       exits clock stretching can be too short or lost) and an
+       ESP32-C3 host. 0x00101013 (~108 kHz Standard-mode) failed
+       outright on the nRF52840 host, and on the ESP32-C3 host only
+       worked with the HOST's own Wire clock left at ~50 kHz (bus rate
+       is master-driven, so a slave TIMINGR computed for a faster
+       nominal target still works against a slower real master clock).
+       0x00100206 (~400 kHz Fast-mode target) confirmed working on the
+       ESP32-C3 host at an actual host clock of ~70 kHz -- consistent
+       with the same pattern, not a working 400 kHz result.
+
+       That whole sensitivity traced significantly to how little real
+       CPU time was available, at only 4 MHz, for the byte-by-byte
+       ISR-driven receive path to keep up with the bus -- not purely
+       TIMINGR margin. Re-derived below for the new ~16 MHz PCLK1:
+       PRESC=0, SCLDEL=4, SDADEL=2, SCLH=12, SCLL=26 gives
+       t_I2CCLK=62.5ns, SCLH=812.5ns (Fm min t_HIGH=600ns),
+       SCLL=1687.5ns (Fm min t_LOW=1300ns), SCLDEL=312.5ns (Fm min
+       t_SU;DAT=100ns), t_SCL=2500ns -> 400kHz nominal.
+       CONFIRMED WORKING on real hardware at genuine 400 kHz on both
+       ends (ESP32-C3 host clocked to match) once PCLK1 was raised to
+       ~16 MHz -- the CPU-speed bottleneck, not TIMINGR margin, was
+       the real ceiling all along. */
+    s_i2c_handle.Init.Timing = 0x00420C1A;
     s_i2c_handle.Init.OwnAddress1 = (uint32_t)(addr << 1);
     s_i2c_handle.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
     s_i2c_handle.Init.OwnAddress2 = 0;

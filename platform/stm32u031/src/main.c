@@ -3,18 +3,25 @@
 #include "stm32u0xx_hal.h"
 
 void SystemClock_Config(void) {
-    /* Placeholder MSI-based main clock configuration -- revisit the MSI
-       range/budget once real hardware exists to confirm it against the
-       board's actual power/performance needs. This is independent of
-       the RTC's own clock source, which is LSE (the real board's fitted
-       32.768 kHz crystal) -- see rtc_init() in platform_stm32u031.c. */
+    /* Raised from the original placeholder ~4 MHz (RCC_MSIRANGE_6) to
+       ~16 MHz (RCC_MSIRANGE_8) -- real hardware testing traced the I2C2
+       COMMAND-register NACK saga (see platform_stm32u031.c's
+       platform_i2c_slave_init() comment) partly to how little real CPU
+       time was available, at 4 MHz, for the byte-by-byte ISR-driven
+       receive path (HAL_I2C_SlaveRxCpltCallback -> register-map logic
+       -> re-arm the next byte) to keep up with the bus between clock
+       edges. This also raises PCLK1 (AHB/APB1 dividers are both DIV1,
+       so HCLK=SYSCLK=PCLK1 always move together), which is I2C2's own
+       kernel clock -- see the re-derived Timing value in
+       platform_i2c_slave_init() for the corresponding TIMINGR update.
+       This is independent of the RTC's own clock source, which is LSE
+       (the real board's fitted 32.768 kHz crystal) -- see rtc_init()
+       in platform_stm32u031.c. */
     RCC_OscInitTypeDef osc_init = {0};
     osc_init.OscillatorType = RCC_OSCILLATORTYPE_MSI;
     osc_init.MSIState = RCC_MSI_ON;
     osc_init.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-    osc_init.MSIClockRange = RCC_MSIRANGE_6; /* ~4 MHz -- verify against
-                                                 the actual clock budget
-                                                 once hardware exists */
+    osc_init.MSIClockRange = RCC_MSIRANGE_8; /* ~16 MHz */
     HAL_RCC_OscConfig(&osc_init);
 
     RCC_ClkInitTypeDef clk_init = {0};
@@ -22,7 +29,15 @@ void SystemClock_Config(void) {
     clk_init.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
     clk_init.AHBCLKDivider = RCC_SYSCLK_DIV1;
     clk_init.APB1CLKDivider = RCC_HCLK_DIV1;
-    HAL_RCC_ClockConfig(&clk_init, FLASH_LATENCY_0);
+    /* FLASH_LATENCY_1 (one wait state), not _0: this datasheet defers
+       the exact HCLK-frequency-vs-wait-state table to RM0503 (the
+       reference manual, not available locally) -- rather than assume
+       0 wait states is still valid at 16 MHz (it was only ever
+       verified correct for the original ~4 MHz), pay the small,
+       low-risk cost of one extra wait state. Verify against RM0503's
+       "Number of wait states according to CPU clock (HCLK) frequency"
+       table and drop back to _0 only if it's confirmed unnecessary. */
+    HAL_RCC_ClockConfig(&clk_init, FLASH_LATENCY_1);
 }
 
 int main(void) {
