@@ -1965,7 +1965,20 @@ git commit -m "Add STM32U031F8 linker script and executable target"
 
 Pin/peripheral assignment for this task (fixed for this backend, consistent with the pin budget the STM32U031F8P6 was selected for in the analysis report): `GPIOA` pin 0 drives the main rail; `I2C1` on its default AF pins provides the slave bus; `RTC` provides the wakeup timer, configured to allow Stop 2 entry per the analysis report's own example code. **Verify against your actual schematic before flashing once hardware exists** — no board exists yet to confirm these choices against, so treat them as the same kind of placeholder the LPC810 backend's pin assignments are.
 
-- [ ] **Step 1: Implement GPIO (rail enable, bus isolation) and `platform_init`**
+**Resolved (hardware bring-up complete):** real hardware now exists and
+this backend has been fully verified end to end, including the hardware
+bring-up this task originally deferred. The final pin assignment landed
+differently than planned above — I2C moved from `I2C1` to `I2C2` on
+`PA6`/`PA7` after real-hardware testing found `PA9`/`PA10`/`PA11`/`PA12`
+electrically tied together on this specific chip/package (see
+`docs/stm32u031_i2c_slave_analysis.md` and git history starting at
+commit `77e232e`). Genuine 400 kHz Fast-mode I2C is confirmed working
+on real silicon (commits `6feaa7b`, `bf78401`), after also tracing and
+fixing a Nordic nRF52840 host silicon errata and raising the vault's
+CPU clock from a placeholder ~4 MHz to ~16 MHz. See the README's
+STM32U031F8P6 section for the full current pinout and status.
+
+- [x] **Step 1: Implement GPIO (rail enable, bus isolation) and `platform_init`**
 
 `platform/stm32u031/src/platform_stm32u031.c` (full file, built up across this task's steps — start with this portion):
 ```c
@@ -2017,7 +2030,7 @@ void platform_bus_isolate(void) {
 }
 ```
 
-- [ ] **Step 2: Implement the RTC-based wakeup timer**
+- [x] **Step 2: Implement the RTC-based wakeup timer**
 
 Append to the same file:
 ```c
@@ -2051,7 +2064,7 @@ void platform_wakeup_timer_clear(void) {
 }
 ```
 
-- [ ] **Step 3: Implement the I2C1 slave driver using HAL's interrupt-driven listen mode**
+- [x] **Step 3: Implement the I2C1 slave driver using HAL's interrupt-driven listen mode**
 
 Append to the same file:
 ```c
@@ -2135,7 +2148,7 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
 
 This uses HAL's sequential slave receive/transmit in one-byte frames precisely so each byte routes through the same `vault_i2c_registers_on_write_byte`/`on_read_request` hooks the LPC810 backend and the host_mock use — `core/` never has to know which HAL called it.
 
-- [ ] **Step 4: Implement Stop 2 sleep entry**
+- [x] **Step 4: Implement Stop 2 sleep entry**
 
 Append to the same file:
 ```c
@@ -2159,7 +2172,7 @@ void platform_enter_low_power_sleep(void) {
 
 `SystemClock_Config()` doesn't exist yet — add a minimal one to `platform/stm32u031/src/main.c` in the next step (real clock tree setup is deferred to hardware bring-up; for a build-only phase, a stub that just calls `HAL_RCC_OscConfig`/`HAL_RCC_ClockConfig` with a plausible MSI-based configuration is enough to make this compile and link).
 
-- [ ] **Step 5: Add `SystemClock_Config()` and finish wiring `main()`**
+- [x] **Step 5: Add `SystemClock_Config()` and finish wiring `main()`**
 
 Replace `platform/stm32u031/src/main.c` entirely with:
 ```c
@@ -2198,14 +2211,14 @@ int main(void) {
 }
 ```
 
-- [ ] **Step 6: Add the source file to the build and link `vault_core`**
+- [x] **Step 6: Add the source file to the build and link `vault_core`**
 
 In `platform/stm32u031/CMakeLists.txt`, add `src/platform_stm32u031.c` to `vault_stm32u031`'s sources, and add:
 ```cmake
 target_link_libraries(vault_stm32u031 PRIVATE vault_core)
 ```
 
-- [ ] **Step 7: Build and verify it compiles and links**
+- [x] **Step 7: Build and verify it compiles and links**
 
 Run:
 ```bash
@@ -2213,7 +2226,7 @@ cd build/stm32u031 && cmake --build . --target vault_stm32u031
 ```
 Expected: builds successfully. This is a build-time correctness check only, per spec §7/§8 — no hardware exists yet to flash it onto. Resolve any HAL type/macro name mismatches (STM32Cube HAL API details do shift slightly between package versions) by grepping the vendored `stm32u0xx_hal_i2c.h`/`stm32u0xx_hal_rtc.h`/`stm32u0xx_hal_pwr_ex.h` for the exact function/enum names if the compiler reports them undefined.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add platform/stm32u031/src/platform_stm32u031.c platform/stm32u031/src/main.c platform/stm32u031/CMakeLists.txt
