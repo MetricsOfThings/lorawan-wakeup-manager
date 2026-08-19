@@ -193,6 +193,59 @@ static void test_wake_interval_partial_write_does_not_commit(void) {
     TEST_ASSERT_EQ_INT(60, (long)vault_state_wake_interval_sec());
 }
 
+static void test_next_write_byte_is_last_false_before_pointer(void) {
+    vault_test_reset_all();
+    TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last());
+}
+
+static void test_next_write_byte_is_last_true_right_after_command_pointer(void) {
+    vault_test_reset_all();
+    vault_i2c_registers_on_write_byte(VAULT_REG_COMMAND);
+    TEST_ASSERT(vault_i2c_registers_next_write_byte_is_last());
+    vault_i2c_registers_on_stop();
+}
+
+static void test_next_write_byte_is_last_true_right_after_context_length_pointer(void) {
+    vault_test_reset_all();
+    vault_i2c_registers_on_write_byte(VAULT_REG_CONTEXT_LENGTH);
+    /* L=2: only after the pointer AND the first value byte does the
+       next (second, final) value byte become "last". */
+    TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last());
+    vault_i2c_registers_on_write_byte(0xAAu);
+    TEST_ASSERT(vault_i2c_registers_next_write_byte_is_last());
+    vault_i2c_registers_on_stop();
+}
+
+static void test_next_write_byte_is_last_sequence_for_wake_interval(void) {
+    vault_test_reset_all();
+    vault_i2c_registers_on_write_byte(VAULT_REG_WAKE_INTERVAL_SEC);
+    TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last()); /* 0 of 4 */
+    vault_i2c_registers_on_write_byte(0x01u);
+    TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last()); /* 1 of 4 */
+    vault_i2c_registers_on_write_byte(0x00u);
+    TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last()); /* 2 of 4 */
+    vault_i2c_registers_on_write_byte(0x00u);
+    TEST_ASSERT(vault_i2c_registers_next_write_byte_is_last());  /* 3 of 4: next is last */
+    vault_i2c_registers_on_write_byte(0x00u);
+    TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last()); /* 4 of 4: complete, no "next" */
+    vault_i2c_registers_on_stop();
+}
+
+static void test_next_write_byte_is_last_always_false_for_context_data(void) {
+    /* CONTEXT_DATA's real length is host-controlled (terminated by
+       STOP whenever the host chooses), so it must never claim the
+       next byte is the last one, no matter how many bytes have
+       already arrived. */
+    vault_test_reset_all();
+    vault_i2c_registers_on_write_byte(VAULT_REG_CONTEXT_DATA);
+    TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last());
+    for (int i = 0; i < 10; i++) {
+        vault_i2c_registers_on_write_byte((uint8_t)i);
+        TEST_ASSERT(!vault_i2c_registers_next_write_byte_is_last());
+    }
+    vault_i2c_registers_on_stop();
+}
+
 int main(void) {
     RUN_TEST(test_status_starts_invalid);
     RUN_TEST(test_protocol_version);
@@ -206,6 +259,11 @@ int main(void) {
     RUN_TEST(test_done_requested_resets_for_new_cycle);
     RUN_TEST(test_wake_interval_roundtrip_little_endian);
     RUN_TEST(test_wake_interval_partial_write_does_not_commit);
+    RUN_TEST(test_next_write_byte_is_last_false_before_pointer);
+    RUN_TEST(test_next_write_byte_is_last_true_right_after_command_pointer);
+    RUN_TEST(test_next_write_byte_is_last_true_right_after_context_length_pointer);
+    RUN_TEST(test_next_write_byte_is_last_sequence_for_wake_interval);
+    RUN_TEST(test_next_write_byte_is_last_always_false_for_context_data);
     printf("%d/%d tests passed\n", g_test_count - g_test_failures, g_test_count);
     return g_test_failures != 0;
 }

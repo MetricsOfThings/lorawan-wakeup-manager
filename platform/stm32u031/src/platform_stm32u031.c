@@ -197,6 +197,14 @@ static void i2c_pins_init(void) {
     gpio_init.Pin = I2C_SDA_PIN | I2C_SCL_PIN;
     gpio_init.Mode = GPIO_MODE_AF_OD;
     gpio_init.Pull = GPIO_NOPULL;
+    /* Previously left unset, defaulting to GPIO_SPEED_FREQ_LOW (0x0) --
+       a real, verified gap (docs/stm32u031_i2c_slave_analysis.md issue
+       #6): low GPIO output/Schmitt-trigger speed can affect edge
+       detection reliability on the receive path, exactly where the
+       COMMAND register's value byte has been getting NACK'd. Raising
+       to HIGH gives the input path the most margin available; dial
+       back down only if there's a concrete reason to (e.g. EMI). */
+    gpio_init.Speed = GPIO_SPEED_FREQ_HIGH;
     /* GPIO_AF3_I2C2 -- verified against both the vendored device header
        (stm32u0xx_hal_gpio_ex.h: GPIO_AF3_I2C2 exists) and the STM32U031
        datasheet's Port A alternate-function table: PA6 lists I2C2_SDA
@@ -224,18 +232,24 @@ void platform_i2c_slave_init(uint8_t addr) {
     i2c_pins_init();
 
     s_i2c_handle.Instance = I2C2;
-    /* Standard-mode (100 kHz) at a 4 MHz I2C kernel clock (PCLK1/MSI --
-       see platform_i2c_slave_init()'s comment on why I2C2 can't use
-       HSI like I2C1 did), computed by hand from ST's TIMINGR formula
-       (t_SCL = t_SYNC1 + t_SYNC2 + [(SCLH+1)+(SCLL+1)] x (PRESC+1) x
-       t_I2CCLK) -- PRESC=0, SCLDEL=1, SDADEL=0, SCLH=16, SCLL=19 gives
-       t_I2CCLK=250ns, t_PRESC=250ns, SCLH=4250ns (Sm min t_HIGH=4000ns),
-       SCLL=5000ns (Sm min t_LOW=4700ns), for an estimated ~108 kHz
-       actual SCL -- both minimums cleared with margin. Re-derive and
-       confirm this value with CubeMX's timing calculator or a scope
-       before flashing -- same caveat this file already applied to the
-       400 kHz I2C1 constant this replaces. */
-    s_i2c_handle.Init.Timing = 0x00101013;
+    /* ~50 kHz (half of Standard-mode) at a 4 MHz I2C kernel clock
+       (PCLK1/MSI -- see this function's comment on why I2C2 can't use
+       HSI like I2C1 did) -- PRESC=0, SCLDEL=2, SDADEL=0, SCLH=36,
+       SCLL=42 gives t_I2CCLK=250ns, SCLH=9250ns, SCLL=10750ns,
+       t_SCL=20000ns -> ~50 kHz.
+       History: the NACK on VAULT_REG_COMMAND/VAULT_CMD_DONE's value
+       byte was originally reproduced with an nRF52840-based host and
+       traced to that chip's documented TWI errata #149 (the first
+       clock pulse after the slave exits clock stretching can be too
+       short or lost) -- switching to a different host (ESP32-C3 based)
+       fixed it at this same ~50 kHz setting. But bumping that same
+       ESP32-C3 host up to the ~108 kHz Standard-mode value
+       (0x00101013) broke it again, so this genuinely is (also) a real
+       timing-margin problem on top of the nRF52840-specific errata --
+       not purely host-silicon-specific. ~50 kHz is the confirmed
+       working speed; do not raise it without hardware retesting on
+       whichever host is actually in use. */
+    s_i2c_handle.Init.Timing = 0x0020242A;
     s_i2c_handle.Init.OwnAddress1 = (uint32_t)(addr << 1);
     s_i2c_handle.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
     s_i2c_handle.Init.OwnAddress2 = 0;
@@ -243,6 +257,14 @@ void platform_i2c_slave_init(uint8_t addr) {
     s_i2c_handle.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
     s_i2c_handle.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
     HAL_I2C_Init(&s_i2c_handle);
+
+    /* Previously never configured -- the analog noise filter defaults
+       ON with ~150ns filter time (docs/stm32u031_i2c_slave_analysis.md
+       issue #7), which can attenuate edges and eat into setup/hold
+       margin on the receive path. Safe to call any time after
+       __HAL_RCC_I2C2_CLK_ENABLE() has run (already done earlier in
+       this function). */
+    HAL_I2CEx_ConfigAnalogFilter(&s_i2c_handle, I2C_ANALOGFILTER_DISABLE);
 
     HAL_NVIC_SetPriority(I2C2_3_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(I2C2_3_IRQn);
@@ -286,7 +308,21 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t direction, uint16_t a
 
 void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
     vault_i2c_registers_on_write_byte(s_rx_byte);
-    HAL_I2C_Slave_Seq_Receive_IT(hi2c, &s_rx_byte, 1, I2C_NEXT_FRAME);
+    /* Real hardware showed the COMMAND register's value byte (the only
+       2-total-byte write in the protocol: pointer + exactly 1 value
+       byte) getting NACK'd specifically, independent of bus speed --
+       ruled out as a raw timing-margin issue by testing at both ~108
+       kHz and ~50 kHz with the same result. Every register's re-arm
+       call was uniformly using I2C_NEXT_FRAME (telling the peripheral
+       "expect a later continuation call"), even for the byte that's
+       actually the final one before STOP for registers with a known
+       fixed length -- untested for exactly this shape until COMMAND,
+       since every other register write is 3+ bytes total.
+       vault_i2c_registers_next_write_byte_is_last() tracks whether the
+       byte about to be armed is that known-final byte, so this can
+       correctly tell the peripheral I2C_LAST_FRAME instead. */
+    uint32_t frame = vault_i2c_registers_next_write_byte_is_last() ? I2C_LAST_FRAME : I2C_NEXT_FRAME;
+    HAL_I2C_Slave_Seq_Receive_IT(hi2c, &s_rx_byte, 1, frame);
 }
 
 void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
@@ -297,6 +333,23 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c) {
 void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c) {
     vault_i2c_registers_on_stop();
     HAL_I2C_EnableListen_IT(hi2c);
+}
+
+/* DIAGNOSTIC: not previously overridden (the default weak HAL_I2C_ErrorCallback()
+   does nothing), so there was no reliable breakpoint target for inspecting a NACK
+   as it happens. s_last_i2c_error / s_last_i2c_isr capture HAL's own error flags
+   and the peripheral's raw ISR register at the moment of the error, for a
+   debugger to read directly -- set a breakpoint on the __NOP() line below and
+   inspect both, plus I2C2->CR2, while investigating the real hardware NACK on
+   the COMMAND register's value byte (see git history / HAL_I2C_SlaveRxCpltCallback()'s
+   comment for the full context). Remove once the root cause is confirmed. */
+static volatile uint32_t s_last_i2c_error;
+static volatile uint32_t s_last_i2c_isr;
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c) {
+    s_last_i2c_error = HAL_I2C_GetError(hi2c);
+    s_last_i2c_isr = hi2c->Instance->ISR;
+    __NOP(); /* <-- breakpoint here */
 }
 
 void platform_enter_low_power_sleep(void) {

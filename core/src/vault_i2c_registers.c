@@ -111,6 +111,31 @@ void vault_i2c_registers_on_write_byte(uint8_t byte) {
     s_field_offset++;
 }
 
+bool vault_i2c_registers_next_write_byte_is_last(void) {
+    /* s_field_offset here is the count of value bytes already consumed
+       for the active register (0 right after the pointer byte, since
+       on_write_byte()'s pointer branch sets s_field_offset=0 and returns
+       before the increment at the bottom of the function). The next byte
+       completes a register of fixed length L when s_field_offset == L-1. */
+    switch (s_active_reg) {
+    case REG_COMMAND:            /* L=1 */
+        return s_field_offset == 0;
+    case REG_CONTEXT_LENGTH:     /* L=2 */
+        return s_field_offset == 1;
+    case REG_WAKE_INTERVAL_SEC:  /* L=4 */
+        return s_field_offset == 3;
+    case REG_CONTEXT_DATA:
+        /* Actual write length is host-controlled (terminated by STOP,
+           not a fixed count known in advance) -- never claim "last". */
+    case REG_STATUS:
+    case REG_PROTOCOL_VERSION:
+        /* Read-only: writes are ignored, no fixed write length to track. */
+    case REG_NONE:
+    default:
+        return false;
+    }
+}
+
 uint8_t vault_i2c_registers_on_read_request(void) {
     uint8_t value = 0xFFu;
 

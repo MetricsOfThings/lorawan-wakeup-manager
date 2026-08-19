@@ -26,6 +26,18 @@ void    vault_i2c_registers_on_write_byte(uint8_t byte);
 uint8_t vault_i2c_registers_on_read_request(void);
 void    vault_i2c_registers_on_stop(void);
 
+/* True if, given the currently-active register and how many of its value
+   bytes have been received so far (i.e. right after the most recent call
+   to vault_i2c_registers_on_write_byte()), the NEXT incoming byte would be
+   the final expected byte for that register's fixed length. False for
+   registers with no fixed write length (CONTEXT_DATA, whose actual length
+   is host-controlled and terminated by STOP) or when no register is
+   currently active. For backends whose HAL exposes a way to tell the I2C
+   peripheral "this is the last byte before STOP" (e.g. ST's XferOptions
+   I2C_LAST_FRAME vs I2C_NEXT_FRAME) -- use this to pick that hint
+   correctly instead of always arming for an open-ended continuation. */
+bool vault_i2c_registers_next_write_byte_is_last(void);
+
 /* Called by vault_core at the start of each wake cycle: clears the
    in-progress-transaction pointer state and the "done" latch, without
    touching context_valid / context data / wake_interval_sec. */
