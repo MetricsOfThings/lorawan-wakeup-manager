@@ -62,7 +62,7 @@ top of "Phase B" in
 register values in the LPC810 backend are marked as needing cross-check
 against the NXP UM10601 reference manual.
 
-### STM32U031F8P6 (build-only until hardware arrives)
+### STM32U031F8P6 (real hardware in hand, confirmed working end to end)
 
 ```bash
 mkdir -p build/stm32u031 && cd build/stm32u031
@@ -70,9 +70,10 @@ cmake ../.. -DVAULT_TARGET=stm32u031
 cmake --build .
 ```
 
-This target compiles and links against the vendored STM32Cube HAL but has
-not been flashed or validated on real silicon yet — see the design spec's
-"out of scope" section.
+This target compiles and links against the vendored STM32Cube HAL and has
+been flashed and validated on real silicon — full I2C exchange (context
+write, wake interval, and the COMMAND=DONE signal) confirmed working at
+genuine 400 kHz Fast-mode (see the I2C notes below).
 
 STM32U031F8P6 is a 20-pin TSSOP20 package (64 KB flash / 12 KB SRAM).
 Full pinout (from the real STM32U031x4/6/8 datasheet, DS14581 Rev 2,
@@ -122,14 +123,33 @@ identical result.
 outside that tied cluster entirely and is the configuration that
 actually works — confirmed via logic analyzer showing correct ACK
 behavior at the vault's address (`0x42`) and successful register
-writes. One caveat: `I2C2` has **no independent kernel-clock-source
-select** on this part (checked against the vendored header:
+writes. `I2C2` has **no independent kernel-clock-source select** on
+this part (checked against the vendored header:
 `RCC_PERIPHCLK_I2C1`/`_I2C3` exist, `RCC_PERIPHCLK_I2C2` does not), so
-it stays on `PCLK1` (~4 MHz via this backend's MSI-based
-`SystemClock_Config()`) rather than the independently-clocked HSI path
-`I2C1` used — [`platform_stm32u031.c`](platform/stm32u031/src/platform_stm32u031.c)
-therefore runs `I2C2` at Standard-mode (100 kHz), not the original
-400 kHz Fast-mode.
+it stays on `PCLK1` rather than the independently-clocked HSI path
+`I2C1` used.
+
+**Genuine 400 kHz Fast-mode is confirmed working end to end on real
+hardware** (host clocked to match). Getting there took two separate
+fixes, not one:
+
+- A documented Nordic nRF52840 host silicon errata (TWI anomaly #149:
+  the first clock pulse after the slave exits clock stretching can be
+  too short or lost) blocked communication with that host entirely,
+  independent of speed — confirmed by swapping to a different host
+  MCU (ESP32-C3 based), which worked immediately at the same rate.
+- Even on the working host, higher speeds were unreliable until
+  [`platform/stm32u031/src/main.c`](platform/stm32u031/src/main.c)'s
+  `SystemClock_Config()` was raised from its original placeholder
+  ~4 MHz MSI to ~16 MHz — the byte-by-byte, ISR-driven `I2C2` receive
+  path simply didn't have enough real CPU time between clock edges to
+  keep up with the bus at the original clock. Raising `PCLK1` (tied to
+  the same MSI) to ~16 MHz and re-deriving `TIMINGR` for genuine
+  400 kHz Fast-mode (`0x00420C1A` in
+  [`platform_stm32u031.c`](platform/stm32u031/src/platform_stm32u031.c))
+  resolved it. Flash latency was also bumped to one wait state as a
+  conservative margin at the higher clock (the datasheet defers the
+  exact HCLK-vs-wait-state table to RM0503, not available locally).
 
 ### EFM32G210F128 (real hardware in hand, pending bring-up verification)
 
@@ -321,8 +341,8 @@ openocd -f interface/stlink-dap.cfg -f target/stm32u0x.cfg \
     with `-s .../com.st.stm32cube.ide.mcu.debug.openocd_*/resources/openocd/st_scripts`, or
   - a mainline OpenOCD built from a recent enough source/nightly that
     includes `target/stm32u0x.cfg`.
-- This target has not been flashed on real silicon yet (see the README
-  section above) — treat the command as untested until hardware arrives.
+- This target has been flashed and confirmed working on real silicon
+  (see the README section above).
 - Flash is mapped at `0x08000000`
   (`platform/stm32u031/linker/stm32u031f8.ld`).
 
