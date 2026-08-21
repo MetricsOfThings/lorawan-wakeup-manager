@@ -41,6 +41,37 @@ void stm32u031_uart_init(void) {
     HAL_UART_Init(&s_uart_handle);
 }
 
+/* Unlike I2C_SDA/SCL (platform_bus_isolate() in platform_stm32u031.c),
+   PA2/USART2_TX was never put into a defined low-power state before
+   Stop 2 entry -- real hardware showed ~900uA Stop-mode current
+   (expected ~600nA) specifically on VAULT_LOG_ENABLED builds. A GPIO
+   pin left configured as Alternate Function for a peripheral whose
+   clock Stop 2 gates (PCLK1, feeding USART2) can end up electrically
+   floating rather than driven, which pulls real current through the
+   input buffer's partially-conducting transistors near the CMOS
+   switching threshold ("shoot-through") -- the same class of leakage
+   the I2C isolation step already exists to prevent. Called from
+   platform_stm32u031.c's platform_enter_low_power_sleep(), which also
+   restores the pin on wake since USART2 itself is initialized once at
+   boot and expected to keep working across sleep cycles (unlike I2C2,
+   which is fully deinit/reinit per cycle). */
+void stm32u031_uart_pin_isolate(void) {
+    GPIO_InitTypeDef gpio_init = {0};
+    gpio_init.Pin = GPIO_PIN_2;
+    gpio_init.Mode = GPIO_MODE_ANALOG;
+    gpio_init.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &gpio_init);
+}
+
+void stm32u031_uart_pin_restore(void) {
+    GPIO_InitTypeDef gpio_init = {0};
+    gpio_init.Pin = GPIO_PIN_2;
+    gpio_init.Mode = GPIO_MODE_AF_PP;
+    gpio_init.Pull = GPIO_NOPULL;
+    gpio_init.Alternate = GPIO_AF7_USART2;
+    HAL_GPIO_Init(GPIOA, &gpio_init);
+}
+
 /* core/'s vault_log() contract (vault/vault_log.h). Only called from
    vault_core's normal thread-mode control flow, never from the I2C1
    ISR -- see the comment in vault_core.c. */

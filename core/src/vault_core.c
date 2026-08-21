@@ -11,6 +11,7 @@ void vault_core_init(void) {
 void vault_core_step(void) {
     /* WAKE_MAIN */
     vault_log("vault_core: wake_main enter\n");
+#ifndef VAULT_DIAGNOSTIC_SKIP_I2C_PERIPHERAL
     /* I2C1 must be live BEFORE the main MCU's rail turns on: the main
        MCU starts polling for the version register as soon as it has
        power, and if platform_i2c_slave_init() hasn't run yet, SDA/SCL
@@ -24,7 +25,11 @@ void vault_core_step(void) {
     vault_i2c_registers_reset_for_cycle();
     platform_i2c_slave_init(VAULT_I2C_ADDR);
     platform_main_rail_enable(true);
+#endif
 
+#ifdef VAULT_DIAGNOSTIC_SKIP_I2C_WAIT
+    vault_log("vault_core: DIAGNOSTIC skipping I2C wait, sleeping immediately\n");
+#else
     for (;;) {
         /* Real backends service I2C via an interrupt handler that calls
            vault_i2c_registers_on_*() concurrently with this loop; see
@@ -60,10 +65,12 @@ void vault_core_step(void) {
         platform_wait_for_interrupt();
         platform_irq_enable();
     }
+#endif
 
     vault_log_u32("vault_core: context_valid=", vault_state_context_valid() ? 1u : 0u);
 
     /* BUS_ISOLATION */
+#ifndef VAULT_DIAGNOSTIC_SKIP_I2C_PERIPHERAL
     /* Cut your MCU's power FIRST, before touching the I2C peripheral or
        its pins. Disabling the slave (platform_i2c_slave_deinit) and
        un-assigning/reconfiguring SDA/SCL (platform_bus_isolate) can
@@ -78,6 +85,7 @@ void vault_core_step(void) {
     platform_main_rail_enable(false);
     platform_i2c_slave_deinit();
     platform_bus_isolate();
+#endif
     vault_log("vault_core: bus_isolation done\n");
 
     /* ARM_SLEEP */

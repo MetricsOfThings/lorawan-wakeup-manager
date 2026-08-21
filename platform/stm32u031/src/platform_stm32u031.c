@@ -24,6 +24,13 @@
 #define I2C_SDA_PIN       GPIO_PIN_6
 #define I2C_SCL_PORT      GPIOA
 #define I2C_SCL_PIN       GPIO_PIN_7
+/* PA1 -- confirmed unused by this backend (read back as Analog/no-pull
+   in a live GPIOA->MODER dump taken during the Stop 2 current
+   investigation), so safe to repurpose as a debugger-free sleep-timing
+   marker. See VAULT_DIAGNOSTIC_SLEEP_GPIO_MARKER's comment in
+   platform/stm32u031/CMakeLists.txt. */
+#define SLEEP_MARKER_PORT GPIOA
+#define SLEEP_MARKER_PIN  GPIO_PIN_1
 
 /* Defined in main.c; no shared header declares it (mirrors CubeMX's own
    convention of a project-wide but header-less SystemClock_Config()). */
@@ -35,18 +42,62 @@ static RTC_HandleTypeDef s_rtc_handle;
 static void gpio_init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
+#ifdef VAULT_DIAGNOSTIC_DISABLE_SWD_IN_SLEEP
+    /* Matches the reference "sleep3" firmware's GPIO_LowPower_Init():
+       blanket every pin (including PA13/PA14, SWDIO/SWCLK) to Analog/
+       no-pull ONCE at boot, before any pin this backend actually uses
+       gets configured below -- rather than isolating/restoring SWD
+       around each Stop 2 cycle (the previous approach here), matching
+       sleep3 exactly means SWD is gone for good after this point, not
+       just during sleep. Recover via the ROM bootloader (force BOOT0
+       high) if you need to reflash after this has run -- see this
+       option's comment in platform/stm32u031/CMakeLists.txt. */
+    GPIO_InitTypeDef analog_init = {0};
+    analog_init.Pin = GPIO_PIN_ALL;
+    analog_init.Mode = GPIO_MODE_ANALOG;
+    analog_init.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &analog_init);
+#endif
+
     GPIO_InitTypeDef gpio_init = {0};
     gpio_init.Pin = MAIN_RAIL_EN_PIN;
     gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
     gpio_init.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(MAIN_RAIL_EN_PORT, &gpio_init);
     HAL_GPIO_WritePin(MAIN_RAIL_EN_PORT, MAIN_RAIL_EN_PIN, GPIO_PIN_RESET);
+
+#ifdef VAULT_DIAGNOSTIC_SLEEP_GPIO_MARKER
+    GPIO_InitTypeDef marker_init = {0};
+    marker_init.Pin = SLEEP_MARKER_PIN;
+    marker_init.Mode = GPIO_MODE_OUTPUT_PP;
+    marker_init.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(SLEEP_MARKER_PORT, &marker_init);
+    HAL_GPIO_WritePin(SLEEP_MARKER_PORT, SLEEP_MARKER_PIN, GPIO_PIN_RESET);
+#endif
 }
 
 static void rtc_init(void);
 
 void platform_init(void) {
     HAL_Init();
+#ifdef VAULT_DIAGNOSTIC_DEBUG_IN_STOP
+    /* See this bit's comment in platform/stm32u031/CMakeLists.txt --
+       keeps SWD reachable while genuinely in Stop 2, at the cost of
+       extra power, so never build with this on for a real current
+       measurement. */
+    SET_BIT(DBGMCU->CR, DBGMCU_CR_DBG_STOP);
+#endif
+    /* HAL_PWREx_EnableUltraLowPowerMode() (PWR_CR3_ENULP) was first
+       tried here and measured as a regression (110uA -> 447uA) --
+       later shown to be a false reading taken during a period where
+       the whole measurement baseline had drifted for unrelated reasons
+       (see git history for the Stop 2 current investigation). A known
+       -good separate reference firmware (STM32CubeIDE "sleep3", same
+       chip/board family) calls this same function and HAL_PWR_
+       DisablePVD() and reaches ~1.6uA in Stop 2, confirming both are
+       safe/beneficial on this hardware -- re-added on that basis. */
+    HAL_PWREx_EnableUltraLowPowerMode();
+    HAL_PWR_DisablePVD();
     gpio_init();
     rtc_init();
 
@@ -109,18 +160,47 @@ static void rtc_init(void) {
     __HAL_RCC_RTC_ENABLE();
     s_rtc_handle.Instance = RTC;
     s_rtc_handle.Init.HourFormat = RTC_HOURFORMAT_24;
-    /* AsynchPrediv=127, SynchPrediv=255 divide RTCCLK by (127+1)*(255+1)
-       = 32768 to produce the 1 Hz SPRE clock platform_wakeup_timer_arm()
-       assumes below -- these values were already chosen assuming
-       exactly a 32.768 kHz RTCCLK, so switching to a real 32.768 kHz LSE
-       crystal is what actually makes that assumption correct (with LSI,
-       whose real frequency is nowhere near as tightly toleranced as a
-       crystal, the same divide would have produced a 1 Hz clock only
-       approximately, drifting with LSI's much larger tolerance). */
-    s_rtc_handle.Init.AsynchPrediv = 127;
+    /* AsynchPrediv=124, SynchPrediv=255 divide RTCCLK by (124+1)*(255+1)
+       = 32000 to produce the 1 Hz SPRE clock platform_wakeup_timer_arm()
+       assumes below. Deliberately NOT 127/(127+1)*256=32768 -- that
+       divisor is only correct for a real 32.768 kHz LSE crystal.
+       STM32U0's LSI nominal rate is ~32 kHz (per the datasheet's LSI
+       characteristics table, and matching a known-good reference
+       firmware's own LSI configuration -- see git history for the Stop
+       2 current investigation), not 32.768 kHz, so 32000 is the correct
+       divisor target for LSI. This only affects wake-interval timing
+       accuracy (both divisors still produce periods within LSI's own
+       +/-tolerance of each other), not Stop 2 current, but matches the
+       oscillator actually in use. LSI's real frequency still isn't
+       tightly toleranced like a crystal, so periods remain approximate
+       either way -- fit an LSE crystal and switch RTCClockSelection
+       back to RCC_RTCCLKSOURCE_LSE (with AsynchPrediv=127) if accurate
+       timekeeping is ever needed. */
+    s_rtc_handle.Init.AsynchPrediv = 124;
     s_rtc_handle.Init.SynchPrediv = 255;
     s_rtc_handle.Init.OutPut = RTC_OUTPUT_DISABLE;
     HAL_RTC_Init(&s_rtc_handle);
+
+    /* This backend never uses Alarm A, but a live register dump during
+       the Stop 2 current investigation showed RTC->CR's ALRAIE bit set
+       anyway -- most likely stale backup-domain state surviving a
+       normal reset/power cycle (the RTC lives in the backup domain,
+       which HAL_RTC_Init() above does not clear). Alarm A and the
+       wakeup timer share the same combined RTC_TAMP_IRQn vector and the
+       same EXTI line 28 (see RTC_EXTI_LINE_WAKEUPTIMER_EVENT/
+       RTC_EXTI_LINE_ALARM_EVENT in stm32u0xx_hal_rtc_ex.h -- both alias
+       EXTI_IMR1_IM28), but RTC_TAMP_IRQHandler below only calls
+       HAL_RTCEx_WakeUpTimerIRQHandler(), which only checks/clears
+       RTC_MISR_WUTMF -- never ALRAF. A left-enabled Alarm A firing on
+       its own schedule would pull the CPU out of Stop 2 repeatedly with
+       its flag never cleared, on a cadence with nothing to do with the
+       intended 60 s wakeup-timer interval -- matching the observed
+       Stop 2 current investigation symptom of never reaching anywhere
+       near the expected sleep duration. Explicitly deactivate and clear
+       it here so stale backup-domain state can never do this, since
+       Alarm A is otherwise fully unused by this backend. */
+    HAL_RTC_DeactivateAlarm(&s_rtc_handle, RTC_ALARM_A);
+    __HAL_RTC_ALARM_CLEAR_FLAG(&s_rtc_handle, RTC_FLAG_ALRAF);
 
     /* Enable the RTC/TAMP combined NVIC line so RTC_TAMP_IRQHandler
        (below) actually fires when the wakeup timer elapses -- mirrors
@@ -372,10 +452,58 @@ void platform_enter_low_power_sleep(void) {
        returns with CPU registers and SRAM intact, consistent with
        vault_core's resume-in-place assumption (spec section 6). */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+#ifdef VAULT_LOG_ENABLED
+    /* Real hardware showed ~900uA Stop-mode current (expected ~600nA)
+       on VAULT_LOG_ENABLED builds specifically -- see
+       stm32u031_uart_pin_isolate()'s comment in
+       platform_stm32u031_uart.c for the mechanism (a floating AF pin
+       on an about-to-be-unclocked peripheral). Isolate right before
+       Stop 2 entry, restore right after -- vault_log() calls between
+       here and the next isolate (including "vault_core: wake") need
+       the pin back in AF mode. */
+    extern void stm32u031_uart_pin_isolate(void);
+    extern void stm32u031_uart_pin_restore(void);
+    stm32u031_uart_pin_isolate();
+#endif
+    /* A live register dump during the Stop 2 current investigation
+       (PWR->CR1 = 0x308) showed VOS[1:0] = 01, i.e. Voltage Scaling
+       Range 1 -- the higher-current range used for full-speed running,
+       never touched by HAL_PWREx_EnterSTOP2Mode() itself. Nothing in
+       this codebase had ever switched to Range 2 (the low-power range)
+       before this. The datasheet's Stop 2 current figures (~600nA with
+       LSE / ~1050nA with LSI RTC) are for Range 2; staying in Range 1
+       through Stop 2 is consistent with the multi-hundred-uA currents
+       observed on real hardware. SystemClock_Config()'s ~16 MHz MSI is
+       comfortably under the "must be below 26 MHz before switching
+       Range 1 -> Range 2" limit documented on
+       HAL_PWREx_ControlVoltageScaling() in stm32u0xx_hal_pwr_ex.c, so
+       no clock change is needed first. */
+    HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE2);
     HAL_SuspendTick();
+#ifdef VAULT_DIAGNOSTIC_SLEEP_GPIO_MARKER
+    /* High for exactly the duration of the Stop-2 call, with no
+       debugger involved -- a current profiler capturing this pin
+       alongside the board's current draw shows directly whether WFI is
+       genuinely blocking for the armed wakeup interval or returning
+       immediately. See this option's comment in
+       platform/stm32u031/CMakeLists.txt. */
+    HAL_GPIO_WritePin(SLEEP_MARKER_PORT, SLEEP_MARKER_PIN, GPIO_PIN_SET);
+#endif
     HAL_PWREx_EnterSTOP2Mode(PWR_STOPENTRY_WFI);
+#ifdef VAULT_DIAGNOSTIC_SLEEP_GPIO_MARKER
+    HAL_GPIO_WritePin(SLEEP_MARKER_PORT, SLEEP_MARKER_PIN, GPIO_PIN_RESET);
+#endif
     HAL_ResumeTick();
+    /* Switch back to Range 1 before SystemClock_Config() re-raises the
+       clock to ~16 MHz -- see the Range 2 switch above this function's
+       Stop 2 entry for why, and HAL_PWREx_ControlVoltageScaling()'s own
+       doc comment for why Range 1 is restored before the frequency
+       increase rather than after. */
+    HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
     SystemClock_Config();
+#ifdef VAULT_LOG_ENABLED
+    stm32u031_uart_pin_restore();
+#endif
 }
 
 void platform_wait_for_interrupt(void) {
