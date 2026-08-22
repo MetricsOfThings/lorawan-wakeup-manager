@@ -42,46 +42,6 @@ if(VAULT_DIAGNOSTIC_SKIP_I2C_WAIT)
     target_compile_definitions(vault_core PUBLIC VAULT_DIAGNOSTIC_SKIP_I2C_WAIT)
 endif()
 
-# Diagnostic only, off by default, and only meaningful combined with
-# VAULT_DIAGNOSTIC_SKIP_I2C_WAIT: skips WAKE_MAIN's I2C peripheral
-# bring-up/main-rail-enable and BUS_ISOLATION's corresponding teardown
-# entirely, going straight from wake to ARM_SLEEP with no peripheral
-# touched at all besides the platform's own RTC/PWR/GPIO low-power
-# setup -- isolates whether a backend's brief per-cycle I2C init/
-# deinit (harmless in Run, but happening every single cycle) has any
-# measurable effect on steady Stop-mode current, by comparing directly
-# against a minimal reference sleep firmware with no peripherals at
-# all beyond RTC/PWR/GPIO. See the STM32U031 Stop 2 current
-# investigation in git history. Never enable for a real deployment --
-# with this on, the vault never talks to a host at all.
-option(VAULT_DIAGNOSTIC_SKIP_I2C_PERIPHERAL
-    "Skip I2C peripheral bring-up/teardown and main rail enable entirely -- isolates whether per-cycle I2C init/deinit affects Stop-mode current, not for real deployment"
-    OFF)
-if(VAULT_DIAGNOSTIC_SKIP_I2C_PERIPHERAL)
-    target_compile_definitions(vault_core PUBLIC VAULT_DIAGNOSTIC_SKIP_I2C_PERIPHERAL)
-endif()
-
-# Diagnostic only, off by default: bypasses vault_core_init()/
-# vault_core_step() entirely -- see VAULT_DIAGNOSTIC_MINIMAL_LOOP's
-# definition in platform/stm32u031/CMakeLists.txt for what runs
-# instead. Isolates whether a real, unmodified, as-normally-compiled
-# platform_stm32u031.c reaches low Stop 2 current when driven directly
-# by a trivial loop, as opposed to through vault_core -- a known-good
-# reference firmware ("sleep3") reaches ~1.3-1.5uA on the same chip
-# despite every individual piece of vault_core's real per-cycle
-# sequence having been hand-ported to it and tested clean in
-# isolation, so this test targets what a hand-port can't rule out:
-# something in vault_core.c/vault_i2c_registers.c itself, or
-# something in the build/linker/startup infrastructure a hand-copy
-# into a different project could never capture. See git history for
-# the Stop 2 current investigation.
-option(VAULT_DIAGNOSTIC_MINIMAL_LOOP
-    "Bypass vault_core entirely; drive platform_stm32u031.c directly from a trivial loop -- diagnostic A/B test only"
-    OFF)
-if(VAULT_DIAGNOSTIC_MINIMAL_LOOP)
-    target_compile_definitions(vault_core PUBLIC VAULT_DIAGNOSTIC_MINIMAL_LOOP)
-endif()
-
 # vault_core is shared across all three backends (host, lpc810, stm32u031)
 # and has no compile options of its own by default, so it would build in
 # ARM mode on the Cortex-M0+ targets and fail to link against Thumb

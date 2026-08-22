@@ -155,21 +155,6 @@ if(VAULT_DIAGNOSTIC_RTC_LSE)
     target_compile_definitions(vault_stm32u031 PRIVATE VAULT_DIAGNOSTIC_RTC_LSE)
 endif()
 
-# Diagnostic only, off by default: switches the active clock from MSI
-# to HSI16 (both at 16MHz, confirmed via a live SystemCoreClock read
-# during the Stop 2 current investigation), to directly A/B-test
-# whether the oscillator TYPE itself (not just frequency) matters for
-# Stop 2 current -- a known-good reference firmware ("sleep3", same
-# chip, confirmed same physical unit as this project's own ~100uA
-# readings) uses HSI16 and reaches ~1.3-1.5uA; every other individual
-# difference between the two firmwares has been tested and ruled out.
-option(VAULT_DIAGNOSTIC_CLOCK_HSI16
-    "Use HSI16 instead of MSI for the active clock (still ~16MHz) -- diagnostic A/B test only"
-    OFF)
-if(VAULT_DIAGNOSTIC_CLOCK_HSI16)
-    target_compile_definitions(vault_stm32u031 PRIVATE VAULT_DIAGNOSTIC_CLOCK_HSI16)
-endif()
-
 add_custom_command(TARGET vault_stm32u031 POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_stm32u031>
 )
