@@ -151,6 +151,45 @@ fixes, not one:
   conservative margin at the higher clock (the datasheet defers the
   exact HCLK-vs-wait-state table to RM0503, not available locally).
 
+**Stop 2 sleep current confirmed at ~1.5µA on real hardware** (down
+from ~900µA measured before this investigation, and briefly the
+correct-looking-but-broken ~110µA baseline that survived most of it).
+The real root cause: this backend never explicitly enabled the `PWR`
+peripheral's own APB clock. `rtc_init()`'s `HAL_RCCEx_PeriphCLKConfig()`
+call temporarily enables `PWR`'s clock to do its own work, then
+**disables it again** afterward, since it wasn't enabled when the
+function started (see `stm32u0xx_hal_rcc_ex.c`'s RTC clock-source
+branch: `__HAL_RCC_PWR_CLK_DISABLE()`). Every later write to a
+`PWR_CR1` register — including Stop 2's own `LPMS` mode-select bits
+in `HAL_PWREx_EnterSTOP2Mode()` — was silently dropped by hardware as
+a result. `SCB->SCR`'s `SLEEPDEEP` bit (a Cortex-M core register, not
+a PWR peripheral one) still got set correctly and `WFI` still
+genuinely blocked for the full wakeup interval, which is why every
+sleep-timing measurement throughout the investigation looked correct
+— but `LPMS` most likely never actually selected real Stop 2,
+consistent with a current matching a much shallower sleep mode
+instead. Fixed with a single `__HAL_RCC_PWR_CLK_ENABLE()` call in
+`platform_init()`.
+
+Confirmed contributing fixes along the way, all still in
+[`platform_stm32u031.c`](platform/stm32u031/src/platform_stm32u031.c):
+isolating the USART2 TX pin before Stop 2 entry (a floating AF-mode
+pin on a soon-to-be-unclocked peripheral was drawing shoot-through
+current); an external `BOOT0` pull-down on the board (any resistor
+value in the kΩ–MΩ range — floating `BOOT0` draws real current since
+its input buffer, unlike ordinary GPIOs, stays active even in Stop 2);
+`HAL_PWREx_EnableUltraLowPowerMode()` and `HAL_PWR_DisablePVD()`;
+explicitly disabling RTC Alarm A (unused by this backend, but found
+enabled from stale backup-domain state); and switching to PWR Voltage
+Scaling Range 2 around Stop 2 entry. The RTC currently runs on LSI —
+LSE has not oscillated on any board revision tried so far (see
+`VAULT_DIAGNOSTIC_RTC_LSE` in `platform/stm32u031/CMakeLists.txt` for
+retrying it on new hardware). Reaching this result took an extensive
+real-hardware investigation, including building this project's own
+unmodified source files through an unrelated reference firmware's
+build infrastructure to rule out a build/linker cause before finding
+the actual one-line fix.
+
 ### EFM32G210F128 (real hardware in hand, pending bring-up verification)
 
 ```bash
