@@ -137,6 +137,39 @@ if(VAULT_DIAGNOSTIC_DISABLE_SWD_IN_SLEEP)
     target_compile_definitions(vault_stm32u031 PRIVATE VAULT_DIAGNOSTIC_DISABLE_SWD_IN_SLEEP)
 endif()
 
+# Diagnostic only, off by default: switches the RTC clock source from
+# LSI to LSE, purely to directly A/B-test whether LSE itself accounts
+# for any of the remaining gap to a known-good reference firmware's
+# Stop 2 current (that reference firmware has only ever been tested
+# with LSI on this hardware -- LSE has NOT been confirmed as the
+# explanation, this option exists to actually test it rather than
+# guess). A much earlier board revision in this project's history
+# found LSE non-functional (garbled UART at both drive levels) -- this
+# option makes it easy to try again on current hardware and easy to
+# revert if it fails, without permanently committing to LSE in
+# rtc_init(). Requires a 32.768 kHz crystal on OSC32_IN/OSC32_OUT.
+option(VAULT_DIAGNOSTIC_RTC_LSE
+    "Use LSE instead of LSI for the RTC clock source -- diagnostic A/B test only, requires a fitted 32.768kHz crystal"
+    OFF)
+if(VAULT_DIAGNOSTIC_RTC_LSE)
+    target_compile_definitions(vault_stm32u031 PRIVATE VAULT_DIAGNOSTIC_RTC_LSE)
+endif()
+
+# Diagnostic only, off by default: switches the active clock from MSI
+# to HSI16 (both at 16MHz, confirmed via a live SystemCoreClock read
+# during the Stop 2 current investigation), to directly A/B-test
+# whether the oscillator TYPE itself (not just frequency) matters for
+# Stop 2 current -- a known-good reference firmware ("sleep3", same
+# chip, confirmed same physical unit as this project's own ~100uA
+# readings) uses HSI16 and reaches ~1.3-1.5uA; every other individual
+# difference between the two firmwares has been tested and ruled out.
+option(VAULT_DIAGNOSTIC_CLOCK_HSI16
+    "Use HSI16 instead of MSI for the active clock (still ~16MHz) -- diagnostic A/B test only"
+    OFF)
+if(VAULT_DIAGNOSTIC_CLOCK_HSI16)
+    target_compile_definitions(vault_stm32u031 PRIVATE VAULT_DIAGNOSTIC_CLOCK_HSI16)
+endif()
+
 add_custom_command(TARGET vault_stm32u031 POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:vault_stm32u031>
 )

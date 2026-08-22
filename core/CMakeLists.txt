@@ -61,6 +61,27 @@ if(VAULT_DIAGNOSTIC_SKIP_I2C_PERIPHERAL)
     target_compile_definitions(vault_core PUBLIC VAULT_DIAGNOSTIC_SKIP_I2C_PERIPHERAL)
 endif()
 
+# Diagnostic only, off by default: bypasses vault_core_init()/
+# vault_core_step() entirely -- see VAULT_DIAGNOSTIC_MINIMAL_LOOP's
+# definition in platform/stm32u031/CMakeLists.txt for what runs
+# instead. Isolates whether a real, unmodified, as-normally-compiled
+# platform_stm32u031.c reaches low Stop 2 current when driven directly
+# by a trivial loop, as opposed to through vault_core -- a known-good
+# reference firmware ("sleep3") reaches ~1.3-1.5uA on the same chip
+# despite every individual piece of vault_core's real per-cycle
+# sequence having been hand-ported to it and tested clean in
+# isolation, so this test targets what a hand-port can't rule out:
+# something in vault_core.c/vault_i2c_registers.c itself, or
+# something in the build/linker/startup infrastructure a hand-copy
+# into a different project could never capture. See git history for
+# the Stop 2 current investigation.
+option(VAULT_DIAGNOSTIC_MINIMAL_LOOP
+    "Bypass vault_core entirely; drive platform_stm32u031.c directly from a trivial loop -- diagnostic A/B test only"
+    OFF)
+if(VAULT_DIAGNOSTIC_MINIMAL_LOOP)
+    target_compile_definitions(vault_core PUBLIC VAULT_DIAGNOSTIC_MINIMAL_LOOP)
+endif()
+
 # vault_core is shared across all three backends (host, lpc810, stm32u031)
 # and has no compile options of its own by default, so it would build in
 # ARM mode on the Cortex-M0+ targets and fail to link against Thumb

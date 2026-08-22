@@ -42,20 +42,43 @@ static RTC_HandleTypeDef s_rtc_handle;
 static void gpio_init(void) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
-#ifdef VAULT_DIAGNOSTIC_DISABLE_SWD_IN_SLEEP
     /* Matches the reference "sleep3" firmware's GPIO_LowPower_Init():
-       blanket every pin (including PA13/PA14, SWDIO/SWCLK) to Analog/
-       no-pull ONCE at boot, before any pin this backend actually uses
-       gets configured below -- rather than isolating/restoring SWD
-       around each Stop 2 cycle (the previous approach here), matching
-       sleep3 exactly means SWD is gone for good after this point, not
-       just during sleep. Recover via the ROM bootloader (force BOOT0
-       high) if you need to reflash after this has run -- see this
-       option's comment in platform/stm32u031/CMakeLists.txt. */
+       blanket every pin on every port to Analog/no-pull ONCE at boot,
+       before any pin this backend actually uses gets configured below
+       -- rather than relying on each port's own reset-default state
+       (confirmed Analog already for GPIOA's unused pins via a live
+       MODER dump, but never actually verified for B/C/D, and this
+       makes it explicit/certain either way instead of assumed).
+       GPIOB/C/D contain no SWD pins, so blanketing them costs nothing
+       and isn't gated behind a flag; GPIOA does contain PA13/PA14
+       (SWDIO/SWCLK) and is gated separately below, since blanketing
+       those kills debugger access until BOOT0-forced ROM-bootloader
+       recovery. HAL_GPIO_Init() only needs each port's clock
+       transiently to write MODER/PUPDR -- gate it back off right
+       after for the ports this backend never otherwise uses. */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOD_CLK_ENABLE();
+
     GPIO_InitTypeDef analog_init = {0};
     analog_init.Pin = GPIO_PIN_ALL;
     analog_init.Mode = GPIO_MODE_ANALOG;
     analog_init.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOB, &analog_init);
+    HAL_GPIO_Init(GPIOC, &analog_init);
+    HAL_GPIO_Init(GPIOD, &analog_init);
+
+    __HAL_RCC_GPIOB_CLK_DISABLE();
+    __HAL_RCC_GPIOC_CLK_DISABLE();
+    __HAL_RCC_GPIOD_CLK_DISABLE();
+
+#ifdef VAULT_DIAGNOSTIC_DISABLE_SWD_IN_SLEEP
+    /* GPIOA specifically contains PA13/PA14 (SWDIO/SWCLK) -- gated
+       separately from the B/C/D blanket above since this one kills
+       debugger access for the rest of this boot, not just during
+       sleep. Recover via the ROM bootloader (force BOOT0 high) if you
+       need to reflash after this has run -- see this option's comment
+       in platform/stm32u031/CMakeLists.txt. */
     HAL_GPIO_Init(GPIOA, &analog_init);
 #endif
 
@@ -80,12 +103,45 @@ static void rtc_init(void);
 
 void platform_init(void) {
     HAL_Init();
+    /* This project never explicitly enabled the PWR peripheral's own
+       APB clock. rtc_init()'s HAL_RCCEx_PeriphCLKConfig() call
+       internally checks __HAL_RCC_PWR_IS_CLK_DISABLED() and, finding
+       it disabled, temporarily enables it to do its own work -- then,
+       critically, DISABLES it again afterward (see
+       stm32u0xx_hal_rcc_ex.c's RTC branch: "Restore clock
+       configuration if changed" -> __HAL_RCC_PWR_CLK_DISABLE()) since
+       it wasn't enabled when the function started. Left unaddressed,
+       every later write to a PWR_CR1 register (VOS range switch, and
+       critically Stop 2's own LPMS mode-select bits in
+       HAL_PWREx_EnterSTOP2Mode()) happens with PWR's own clock gated
+       off and is silently dropped by hardware -- SCB->SCR's
+       SLEEPDEEP bit (a Cortex-M core register, not a PWR peripheral
+       one) still gets set and WFI still genuinely blocks for the
+       correct interval, which is why every timing/cycling observation
+       throughout the Stop 2 current investigation looked correct, but
+       LPMS likely never actually selected real Stop 2 -- consistent
+       with the persistent ~100uA current matching a much shallower
+       sleep mode (e.g. Stop 0) instead. A known-good reference
+       firmware ("sleep3") avoids this entirely by calling this once,
+       unconditionally, at boot, and never disabling it -- this
+       backend never had an equivalent call anywhere. See git history
+       for the full Stop 2 current investigation this fix is part of. */
+    __HAL_RCC_PWR_CLK_ENABLE();
 #ifdef VAULT_DIAGNOSTIC_DEBUG_IN_STOP
     /* See this bit's comment in platform/stm32u031/CMakeLists.txt --
        keeps SWD reachable while genuinely in Stop 2, at the cost of
        extra power, so never build with this on for a real current
        measurement. */
     SET_BIT(DBGMCU->CR, DBGMCU_CR_DBG_STOP);
+#else
+    /* Disable the debug module clocks in low-power modes (Stop/Standby/
+     * Shutdown). This is the single biggest lever after GPIO config: with
+     * SWD/JTAG left clocked, STOP2 current can be several times higher.
+     * NOTE: once this is active you will NOT be able to reconnect a
+     * debugger while the part is asleep - reflash with BOOT0/System memory
+     * or comment this out during bring-up/debugging. */
+    HAL_DBGMCU_DisableDBGStopMode();
+    HAL_DBGMCU_DisableDBGStandbyMode();
 #endif
     /* HAL_PWREx_EnableUltraLowPowerMode() (PWR_CR3_ENULP) was first
        tried here and measured as a regression (110uA -> 447uA) --
@@ -135,18 +191,58 @@ static void rtc_init(void) {
        it does on other STM32 families before flashing. */
     HAL_PWR_EnableBkUpAccess();
 
-    /* Back on LSI. LSE was retried at both RCC_LSEDRIVE_LOW and
-       RCC_LSEDRIVE_HIGH -- both produced UART output garbled from the
-       very first character, every time, versus clean readable output
-       under LSI every time. Ruling out drive strength as the cause
-       (both levels failed identically) points at LSE itself being
-       non-functional on this specific board -- a real hardware issue
-       (crystal, load caps, or board layout) rather than something
-       fixable from firmware. See git history for the full LSE <-> LSI
-       investigation. Do not retry LSE again without first physically
-       inspecting the crystal circuit (continuity, load caps, solder
-       joints) or confirming oscillation with a scope -- further
-       software-only drive-level tuning already been shown not to help. */
+    /* RCC_BDCR (RTCSEL, LSEON, RTCEN, and this reset bit itself) is
+       "write-once-until-backup-domain-reset" -- confirmed on real
+       hardware that flashing this LSI build right after a diagnostic
+       LSE build left the wakeup timer silently never arming again
+       (RTCSEL stayed latched on the earlier, non-functional LSE
+       selection), and that a full power-cycle alone did NOT clear it
+       -- this board's backup-domain supply outlasts a brief power
+       removal, so only an explicit reset actually clears stale state
+       here. (A first attempt at this fix was wrongly reverted after
+       an SWD connection loss that looked correlated -- that loss is
+       far better explained by VAULT_DIAGNOSTIC_DISABLE_SWD_IN_SLEEP
+       being enabled in the same test build, which independently
+       reconfigures PA13/PA14 to Analog via plain GPIO registers with
+       no relation to this reset at all. Do not combine
+       VAULT_DIAGNOSTIC_DISABLE_SWD_IN_SLEEP with any debugger-based
+       test -- it deliberately kills SWD access by design.) */
+    __HAL_RCC_BACKUPRESET_FORCE();
+    __HAL_RCC_BACKUPRESET_RELEASE();
+
+#ifdef VAULT_DIAGNOSTIC_RTC_LSE
+    /* Diagnostic A/B test only -- see this option's comment in
+       platform/stm32u031/CMakeLists.txt. A much earlier board revision
+       in this project's history found LSE non-functional (garbled UART
+       at both RCC_LSEDRIVE_LOW and RCC_LSEDRIVE_HIGH) -- if that
+       recurs here, HAL_RCC_OscConfig() below will time out and this
+       function will silently continue with no working RTC clock at
+       all. Do not ship with this enabled without confirming LSE
+       oscillation on a scope first. */
+    /* __HAL_RCC_LSEDRIVE_CONFIG() must run before enabling LSE (LSEDRV
+       is only meaningful pre-startup) and after HAL_PWR_EnableBkUpAccess()/
+       the backup-domain reset above, since it's a backup-domain
+       register field. MEDIUMHIGH (for this crystal's 12.5pF load
+       capacitance) did not get LSE oscillating on real hardware --
+       escalated to the maximum, RCC_LSEDRIVE_HIGH. If this still
+       doesn't work, drive strength is very unlikely to be the actual
+       problem (LOW, MEDIUMHIGH, and now HIGH covers nearly the entire
+       range) -- stop tuning this in software and physically verify
+       the crystal circuit instead (continuity, correct load cap
+       values actually populated, solder joints, or confirm/deny real
+       oscillation directly with a scope on OSC32_IN/OSC32_OUT). */
+    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_HIGH);
+
+    RCC_OscInitTypeDef lse_osc_init = {0};
+    lse_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+    lse_osc_init.LSEState = RCC_LSE_ON;
+    HAL_RCC_OscConfig(&lse_osc_init);
+
+    RCC_PeriphCLKInitTypeDef periph_clk_init = {0};
+    periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+    periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
+#else
     RCC_OscInitTypeDef lsi_osc_init = {0};
     lsi_osc_init.OscillatorType = RCC_OSCILLATORTYPE_LSI;
     lsi_osc_init.LSIState = RCC_LSI_ON;
@@ -156,10 +252,17 @@ static void rtc_init(void) {
     periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_RTC;
     periph_clk_init.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
     HAL_RCCEx_PeriphCLKConfig(&periph_clk_init);
+#endif
 
     __HAL_RCC_RTC_ENABLE();
     s_rtc_handle.Instance = RTC;
     s_rtc_handle.Init.HourFormat = RTC_HOURFORMAT_24;
+#ifdef VAULT_DIAGNOSTIC_RTC_LSE
+    /* AsynchPrediv=127, SynchPrediv=255 divide a real 32.768 kHz LSE
+       by (127+1)*(255+1) = 32768 to produce the 1 Hz SPRE clock
+       platform_wakeup_timer_arm() assumes below. */
+    s_rtc_handle.Init.AsynchPrediv = 127;
+#else
     /* AsynchPrediv=124, SynchPrediv=255 divide RTCCLK by (124+1)*(255+1)
        = 32000 to produce the 1 Hz SPRE clock platform_wakeup_timer_arm()
        assumes below. Deliberately NOT 127/(127+1)*256=32768 -- that
@@ -173,10 +276,9 @@ static void rtc_init(void) {
        +/-tolerance of each other), not Stop 2 current, but matches the
        oscillator actually in use. LSI's real frequency still isn't
        tightly toleranced like a crystal, so periods remain approximate
-       either way -- fit an LSE crystal and switch RTCClockSelection
-       back to RCC_RTCCLKSOURCE_LSE (with AsynchPrediv=127) if accurate
-       timekeeping is ever needed. */
+       either way. */
     s_rtc_handle.Init.AsynchPrediv = 124;
+#endif
     s_rtc_handle.Init.SynchPrediv = 255;
     s_rtc_handle.Init.OutPut = RTC_OUTPUT_DISABLE;
     HAL_RTC_Init(&s_rtc_handle);
